@@ -13,7 +13,7 @@ import { CHARACTERS, isCharacterUnlocked } from './data/characters';
 import { WorldRenderer } from './render/renderer';
 import { AudioSystem } from './systems/audio';
 import { SaveManager } from './systems/save';
-import type { RunResult } from './systems/run';
+import type { RunResult, SavedRun } from './systems/run';
 import { GameplayScene, type GameHost } from './scenes/gameplay';
 import { NetClient } from './net/NetClient';
 import type { NetMode, PeerInfo } from './net/protocol';
@@ -81,7 +81,7 @@ class App implements GameHost {
     this.syncCursor();
 
     // 菜单初始按钮
-    this.menuButtons = buildMenuButtons(this.menuState);
+    this.menuButtons = buildMenuButtons(this.menuState, this.save.savedRun);
 
     // 玩家在浏览器里经常先点一下才能出声：任何输入都尝试初始化音频上下文
     window.addEventListener('pointerdown', () => this.audio.init(), { once: false });
@@ -187,7 +187,7 @@ class App implements GameHost {
   private updateMenu(_dt: number): void {
     const lb = this.menuState.lobby;
     if (this.menuState.mode === 'multi' && lb.joining) this.handleLobbyKeyInput();
-    this.menuButtons = buildMenuButtons(this.menuState);
+    this.menuButtons = buildMenuButtons(this.menuState, this.save.savedRun);
     const p = this.input.pointer;
     const hovered = hitTest(this.menuButtons, p.sx, p.sy);
     this.hoverId = hovered ? hovered.id : null;
@@ -283,6 +283,9 @@ class App implements GameHost {
         st.previous = 'main';
         st.mode = 'charselect';
         break;
+      case 'resume-run':
+        this.resumeRun();
+        break;
       case 'codex':
         st.previous = 'main';
         st.mode = 'codex';
@@ -366,13 +369,26 @@ class App implements GameHost {
   // ------------------------------------------------------------- 地牢
 
   private startRun(characterId: string): void {
+    // 开新局就意味着上一局的存档点作废（新局进第一个房间时会立刻写入自己的存档）
+    this.save.clearRun();
+    this.beginRun(characterId, null);
+  }
+
+  /** 继续未完成的远征：角色与种子都取自存档，按存档把玩家放回原房间。 */
+  private resumeRun(): void {
+    const saved = this.save.savedRun;
+    if (!saved) return;
+    this.beginRun(saved.characterId, saved);
+  }
+
+  private beginRun(characterId: string, resume: SavedRun | null): void {
     // 单机远征与联机房间互斥：先退房，避免房主开局时把本地玩家拽进联机局
     if (this.menuState.lobby.phase === 'room') this.closeLobby();
-    const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+    const seed = resume ? resume.seed : (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
     this.audio.init();
     this.audio.setMusicIntensity(0);
     this.game?.dispose();
-    this.game = new GameplayScene(this, characterId, seed);
+    this.game = new GameplayScene(this, characterId, seed, undefined, resume);
     this.scene = 'game';
     this.audio.startMusic();
     this.audio.play('door', 0.9);
@@ -380,6 +396,7 @@ class App implements GameHost {
 
   /** 一局结束（死亡 / 通关）后回大厅。 */
   endRun(result: RunResult): void {
+    this.save.clearRun();
     this.save.recordRun({
       floor: result.floor,
       won: result.won,
@@ -394,6 +411,7 @@ class App implements GameHost {
 
   /** 主动放弃远征：同样计入统计，但不算通关。 */
   abandonRun(): void {
+    this.save.clearRun();
     if (this.game) {
       const r = this.game.state.result(false);
       this.save.recordRun({
@@ -427,7 +445,7 @@ class App implements GameHost {
     this.netRoomCode = '';
     this.scene = 'menu';
     this.menuState = createMenuState();
-    this.menuButtons = buildMenuButtons(this.menuState);
+    this.menuButtons = buildMenuButtons(this.menuState, this.save.savedRun);
     this.hoverId = null;
   }
 

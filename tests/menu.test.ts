@@ -377,3 +377,56 @@ describe('图鉴分页', () => {
     expect(checked).toBeGreaterThan(CHARACTERS.length * 8);
   });
 });
+
+describe('主菜单：续玩入口（需求16-2）', () => {
+  test('有未完成远征时首行拆成「继续远征 / 新的远征」', () => {
+    const buttons = buildMenuButtons(createMenuState(), { floor: 3, characterId: 'wolfshade' });
+    const resume = buttons.find((b) => b.id === 'resume-run');
+    expect(resume).toBeDefined();
+    expect(resume!.label).toBe('继续远征 · 第 3 层');
+    const start = buttons.find((b) => b.id === 'start');
+    expect(start!.label).toBe('新的远征');
+    // 续玩按钮落在左侧按钮列，不侵入右侧面板
+    expect(resume!.x + resume!.w).toBeLessThanOrEqual(PANEL.x);
+  });
+
+  test('无远征存档时只有「开始远征」', () => {
+    const buttons = buildMenuButtons(createMenuState());
+    expect(buttons.find((b) => b.id === 'resume-run')).toBeUndefined();
+    expect(buttons.find((b) => b.id === 'start')!.label).toBe('开始远征');
+  });
+});
+
+describe('联机大厅：模式卡说明文字不溢出（需求16-3）', () => {
+  function lobbyState(mode: 'coop' | 'pk'): MenuState {
+    const state = createMenuState();
+    state.mode = 'multi';
+    state.lobby.phase = 'idle';
+    state.lobby.mode = mode;
+    return state;
+  }
+
+  test('合作卡说明文字水平居中在卡片内', () => {
+    const texts = render(lobbyState('coop'));
+    const desc = '共享同一份地牢，敌人一起打，无友伤';
+    const lines = texts.filter((t) => desc.includes(t.text) && t.text.length > 0);
+    expect(lines.length).toBeGreaterThan(0);
+    // 合作卡：x=270 w=360 → 中心 450。说明文字以中心点为锚，不应溢出到卡片左边界外
+    for (const l of lines) {
+      expect(l.x).toBeCloseTo(450, 0);
+      expect(l.x).toBeGreaterThanOrEqual(270);
+    }
+  });
+
+  test('混战卡说明文字水平居中在卡片内', () => {
+    const texts = render(lobbyState('pk'));
+    const desc = '互相可伤害，最后存活者胜，阵亡后可观战';
+    const lines = texts.filter((t) => desc.includes(t.text) && t.text.length > 0);
+    expect(lines.length).toBeGreaterThan(0);
+    // 混战卡：x=650 w=360 → 中心 830
+    for (const l of lines) {
+      expect(l.x).toBeCloseTo(830, 0);
+      expect(l.x).toBeGreaterThanOrEqual(650);
+    }
+  });
+});

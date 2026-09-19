@@ -16,6 +16,7 @@ import type { DungeonPlan } from '../src/dungeon/dungeon';
 import type { Boss } from '../src/entities/boss';
 import { WorldRenderer } from '../src/render/renderer';
 import { GameplayScene, type GameHost } from '../src/scenes/gameplay';
+import { Pickup } from '../src/entities/pickup';
 import { AudioSystem } from '../src/systems/audio';
 import { SaveManager, createMemoryStorage } from '../src/systems/save';
 import type { RunResult } from '../src/systems/run';
@@ -744,5 +745,55 @@ describe('游戏主循环冒烟测试', () => {
       expect(r.w).toBeGreaterThan(0);
       expect(r.h).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('需求16：换枪掉落 / 存档续玩', () => {
+  test('需求16-1：满 2 把武器时拾取新枪，被换下的枪掉到地上且保留原余弹', () => {
+    const { host } = makeHost();
+    const scene = new GameplayScene(host, 'wolfshade', 20240918);
+    const player = scene.state.player;
+    player.addOrReplaceWeapon('shotgun'); // 现在 2 把，当前 = shotgun
+    player.currentWeapon.ammo = 7; // 模拟一把「辛苦打的、还剩 7 发」的枪
+    const replacedId = player.currentWeapon.def.id;
+    const replacedAmmo = player.currentWeapon.ammo;
+
+    // 玩家脚下放一把地面武器（宝箱/拾取/购买的统一落下物）
+    const ground = new Pickup('weapon', player.x, player.y, { weaponId: 'sniper', amount: 0 });
+    (scene as unknown as { pickups: Pickup[] }).pickups.push(ground);
+
+    // 直接驱动交互（聚焦「换枪掉落」这一条路径）
+    (scene as unknown as { executeInteract: (p: Pickup, pl: unknown) => void }).executeInteract(ground, player);
+
+    // 新枪已装上
+    expect(player.currentWeapon.def.id).toBe('sniper');
+    // 地面多出一把「被换下」的枪底座，其 id / 余弹与换下前完全一致
+    const dropped = (scene as unknown as { pickups: Pickup[] }).pickups.filter(
+      (p) => p.kind === 'weapon' && p.data.weaponId === replacedId,
+    );
+    expect(dropped.length).toBeGreaterThanOrEqual(1);
+    expect(dropped[0]!.data.amount).toBe(replacedAmmo);
+    scene.dispose();
+  });
+
+  test('需求16-2：用存档续玩能恢复楼层 / 武器 / 所在房间（刷新不丢进度）', () => {
+    const { host } = makeHost();
+    const scene = new GameplayScene(host, 'wolfshade', 20240918);
+    scene.state.player.addOrReplaceWeapon('sniper');
+    const snap = scene.state.snapshotRun({});
+    const seed = snap.seed;
+    const charId = snap.characterId;
+    const floor = snap.floor;
+    const roomKey = snap.currentRoomKey;
+    const weaponIds = snap.weapons.map((w) => w.id);
+    scene.dispose();
+
+    // 等价于刷新页面：用同一份存档开新的一局
+    const { host: host2 } = makeHost();
+    const resumed = new GameplayScene(host2, charId, seed, undefined, snap);
+    expect(resumed.state.floor).toBe(floor);
+    expect(resumed.state.currentRoomKey).toBe(roomKey);
+    expect(resumed.state.player.weapons.map((w) => w.def.id)).toEqual(weaponIds);
+    resumed.dispose();
   });
 });

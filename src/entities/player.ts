@@ -181,16 +181,32 @@ export class Player extends Entity {
     return true;
   }
 
-  addOrReplaceWeapon(defId: string): void {
+  /**
+   * 拾取 / 购买武器。
+   * 未满 2 把 → 直接加入并切过去；已满 2 把 → 替换当前武器。
+   * **被替换下来的那把不销毁**，而是随剩余弹药一起返回给调用方（掉到地上可再捡回），
+   * 否则玩家一旦捡到不喜欢的枪，原来辛苦买的枪就凭空没了。
+   * @param ammo 可选的指定弹药（拾回地面旧枪时用它恢复原余弹，避免反复换枪刷满弹）
+   */
+  addOrReplaceWeapon(defId: string, ammo?: number): { id: string; ammo: number } | null {
+    const makeInstance = () => {
+      const inst = createWeaponInstance(defId, this.mods);
+      if (typeof ammo === 'number' && Number.isFinite(ammo)) {
+        inst.ammo = clamp(Math.floor(ammo), 0, inst.magSize);
+      }
+      return inst;
+    };
     if (this.weapons.length < 2) {
-      this.weapons.push(createWeaponInstance(defId, this.mods));
+      this.weapons.push(makeInstance());
       this.swapWeapon(this.weapons.length - 1);
-      return;
+      return null;
     }
-    // 替换当前武器，新武器装满弹
-    const inst = createWeaponInstance(defId, this.mods);
-    this.weapons[this.weaponIndex] = inst;
+    // 替换当前武器，新武器按 ammo 参数（缺省则装满弹）
+    const lost = this.weapons[this.weaponIndex]!;
+    const dropped = { id: lost.def.id, ammo: lost.ammo };
+    this.weapons[this.weaponIndex] = makeInstance();
     this.attackTimer = 0.25;
+    return dropped;
   }
 
   startReload(): void {

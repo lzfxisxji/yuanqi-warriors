@@ -165,4 +165,36 @@ describe('远征状态 RunState', () => {
       expect(types.filter((t) => t === 'combat' || t === 'elite').length).toBeGreaterThan(0);
     }
   });
+
+  test('需求16-2：snapshotRun 后 restoreRun 能完整复现远征', () => {
+    const run = makeRun(13579, 'sting');
+    run.advanceFloor(); // 到第 2 层
+    run.addUpgrade('bullet');
+    run.addUpgrade('heart');
+    run.gold = 123;
+    run.player.weapons[0]!.ammo = 5;
+    const clearedKey = [...run.plan.nodes.keys()].find((k) => k !== run.plan.startKey)!;
+    run.plan.nodes.get(clearedKey)!.cleared = true;
+    run.stats.kills = 9;
+
+    const snap = run.snapshotRun({});
+
+    // 全新一局，用同一角色与种子恢复
+    const restored = new RunState(getCharacter('sting'), 13579);
+    restored.restoreRun(snap);
+
+    expect(restored.floor).toBe(run.floor);
+    expect(restored.gold).toBe(123);
+    expect(restored.upgrades.map((u) => u.id).sort()).toEqual(['bullet', 'heart']);
+    // 武器 id 一致，且余弹保留
+    expect(restored.player.weapons.map((w) => w.def.id)).toEqual(run.player.weapons.map((w) => w.def.id));
+    expect(restored.player.weapons[0]!.ammo).toBe(5);
+    // 已清房间复现
+    expect(restored.plan.nodes.get(clearedKey)!.cleared).toBe(true);
+    // 玩家回到存档所在房间，且该房间在 plan 内
+    expect(restored.plan.nodes.has(restored.currentRoomKey)).toBe(true);
+    expect(restored.visited.has(restored.currentRoomKey)).toBe(true);
+    // 统计复现
+    expect(restored.stats.kills).toBe(9);
+  });
 });

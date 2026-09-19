@@ -46,7 +46,7 @@ import { DamageNumbers, FlashOverlay, ScreenShake, TimeControl, drawBeam } from 
 import { ParticleSystem } from '../systems/particles';
 import type { AudioSystem } from '../systems/audio';
 import type { SaveManager } from '../systems/save';
-import { RunState, type RunResult } from '../systems/run';
+import { RunState, type RunResult, type SavedRoomFlags, type SavedRun } from '../systems/run';
 import { updateWeapon } from '../systems/weaponSystem';
 import { darken, lighten, drawBoss, drawEnemy, drawPickup, drawPlayer } from '../render/art';
 import { drawHud } from '../render/hud';
@@ -110,6 +110,9 @@ type Mode = 'play' | 'overlay' | 'transition';
 
 const TRANSITION_HALF = 0.26;
 
+/** 单机自动存档间隔（秒）。进新房间时也会立刻存一次。 */
+const AUTOSAVE_INTERVAL = 4;
+
 export class GameplayScene {
   private host: GameHost;
   private run: RunState;
@@ -167,6 +170,10 @@ export class GameplayScene {
   private pendingBossStart = false;
   /** 上一帧的 dt，供渲染层做与帧率无关的动画（如火光抖动） */
   private lastDt = 1 / 60;
+  /** 续玩时恢复的房间级交互标志（宝箱已开 / 事件已触发 / 补给站已弹过） */
+  private readonly savedRoomFlags: Record<string, SavedRoomFlags> = {};
+  /** 自动存档节流：每 AUTOSAVE_INTERVAL 秒落一次盘 */
+  private autosaveAccum = 0;
 
   // ------------------------------------------------------------- 联机状态
   /** 联网客户端（单人模式为 null，所有联机分支都不会触发）。 */
@@ -202,11 +209,19 @@ export class GameplayScene {
   private readonly snapProjectileBuf: Projectile[] = [];
   private netEnemyIdCounter = 0;
 
-  constructor(host: GameHost, characterId: string, seed: number, net?: NetOptions) {
+  /**
+   * @param resume 续玩存档（单机）。传入时会按同一种子重建地牢、恢复金币/强化/武器/生命，
+   *               并把玩家放回存档所在房间；房间内的敌人与掉落不恢复（重新开打）。
+   */
+  constructor(host: GameHost, characterId: string, seed: number, net?: NetOptions, resume?: SavedRun | null) {
     this.host = host;
     this.bus = host.bus;
     this.rng = new RNG((seed ^ 0x5bf03635) >>> 0);
     this.run = new RunState(getCharacter(characterId), seed);
+    if (resume) {
+      for (const [key, flags] of Object.entries(resume.rooms)) this.savedRoomFlags[key] = flags;
+      this.run.restoreRun(resume);
+    }
     this.allPlayers.push(this.run.player);
     this.damageCtx = {
       particles: this.particles,
@@ -218,7 +233,8 @@ export class GameplayScene {
       audio: host.audio,
     };
     this.numbers.enabled = host.save.data.settings.showDamageNumbers;
-    const startRoom = this.getRoom(this.run.plan.startKey);
+    const entryKey = this.run.currentRoomKey;
+    const startRoom = this.getRoom(entryKey);
     this.world = {
       players: this.allPlayers,
       focusAt: (x: number, y: number) => this.focusAt(x, y),
@@ -232,7 +248,7 @@ export class GameplayScene {
     };
     this.room = startRoom;
     if (net) this.setupNet(net);
-    this.enterRoom(this.run.plan.startKey, null);
+    this.enterRoom(entryKey, null);
     host.audio.setMusicIntensity(0);
   }
 
@@ -304,6 +320,13 @@ export class GameplayScene {
         seed: (hashString(key) ^ this.run.seedForFloor(this.run.floor)) >>> 0,
       });
       room = new Room(node.gx, node.gy, node.type, node.doors, layout);
+      // 续玩存档：把「宝箱已开 / 事件已触发 / 补给站已弹过」还原回来，避免重开刷奖励
+      const flags = this.savedRoomFlags[key];
+      if (flags) {
+        room.rewardDropped = flags.rewardDropped === true;
+        room.interacted = flags.interacted === true;
+        room.prepShown = flags.prepShown === true;
+      }
       this.rooms.set(key, room);
     }
     return room;
@@ -320,6 +343,30 @@ export class GameplayScene {
       this.roomPickups.set(key, list);
     }
     return list;
+  }
+
+  /**
+   * 把当前远征进度写进 localStorage（**只有单机存**：
+   * 联机局的进度属于房间，存档会误导玩家以为能续玩）。
+   * 触发点：进入新房间、定时心跳、打开暂停菜单。
+   */
+  private persistRun(): void {
+    if (this.isMultiplayer() || this.ended || this.run.player.dead) return;
+    this.host.save.setRun(this.run.snapshotRun(this.collectRoomFlags()));
+  }
+
+  /** 收集各房间的交互标志（宝箱已开 / 事件已触发 / 补给站已弹过），供存档使用。 */
+  private collectRoomFlags(): Record<string, SavedRoomFlags> {
+    const out: Record<string, SavedRoomFlags> = {};
+    for (const [key, room] of this.rooms) {
+      if (!room.rewardDropped && !room.interacted && !room.prepShown) continue;
+      out[key] = {
+        rewardDropped: room.rewardDropped,
+        interacted: room.interacted,
+        prepShown: room.prepShown,
+      };
+    }
+    return out;
   }
 
   private enterRoom(key: string, fromDir: Dir4 | null): void {
@@ -436,6 +483,8 @@ export class GameplayScene {
       room.rewardDropped = true;
       this.spawnPortal();
     }
+    // 每次进房都是一个干净的存档点（房间内的敌人不会进档，续玩时这间重打）
+    this.persistRun();
   }
 
   private spawnWave(): void {
@@ -631,6 +680,13 @@ export class GameplayScene {
     this.host.renderer.followPlayer(player.x, player.y, player.aimAngle, this.room, dtRaw);
     this.host.audio.updateMusic(dtRaw);
     if (this.netRole === 'host') this.updateHostNet(dtRaw);
+
+    // 自动存档心跳：定时把进度落盘，避免强关页面丢掉几分钟
+    this.autosaveAccum += dtRaw;
+    if (this.autosaveAccum >= AUTOSAVE_INTERVAL) {
+      this.autosaveAccum = 0;
+      this.persistRun();
+    }
   }
 
   private updateAim(): void {
@@ -646,6 +702,8 @@ export class GameplayScene {
     const input = this.host.input;
     const player = this.run.player;
     if (input.wasPressed('Escape')) {
+      // 暂停前先落一次盘：不少人是在暂停界面里直接关掉页面的
+      this.persistRun();
       this.openOverlay('pause');
       return;
     }
@@ -987,11 +1045,13 @@ export class GameplayScene {
     switch (p.kind) {
       case 'weapon': {
         const def = getWeaponDef(p.data.weaponId!);
-        player.addOrReplaceWeapon(def.id);
+        const dropped = player.addOrReplaceWeapon(def.id, p.data.amount);
         this.host.save.discoverWeapon(def.id);
         this.host.audio.play('upgrade', 0.9);
         this.particles.sparkle(p.x, p.y, def.colors.glow, 14);
         p.collected = true;
+        // 换下来的枪掉在脚边，而不是凭空消失
+        if (dropped) this.dropWeapon(player, dropped);
         break;
       }
       case 'upgradeOrb': {
@@ -1244,6 +1304,35 @@ export class GameplayScene {
     const p = new Pickup('chest', ROOM_W / 2, ROOM_H / 2 + 20, {});
     this.pickups.push(p);
     this.particles.shockwave(p.x, p.y, 200, '#ffd479', 0.6);
+  }
+
+  /**
+   * 把换下来的武器丢在玩家脚边，变成地面上可再捡回的武器底座（带原剩余弹药）。
+   * 依次尝试左右几个偏移点，取第一个不是墙的位置；都撞墙就退回玩家脚下
+   * ——玩家站着的地方一定是可走地面，保证掉出来的枪不会被卡进墙里拿不到。
+   */
+  private dropWeapon(player: Player, dropped: { id: string; ammo: number }): void {
+    const candidates: Array<[number, number]> = [
+      [-48, 0],
+      [48, 0],
+      [-84, 0],
+      [84, 0],
+      [0, 48],
+      [0, -48],
+    ];
+    let x = player.x;
+    let y = player.y;
+    for (const [dx, dy] of candidates) {
+      const cx = clamp(player.x + dx, 48, ROOM_W - 48);
+      const cy = clamp(player.y + dy, 48, ROOM_H - 48);
+      if (!this.room.isBlockedPoint(cx, cy)) {
+        x = cx;
+        y = cy;
+        break;
+      }
+    }
+    this.pickups.push(new Pickup('weapon', x, y, { weaponId: dropped.id, amount: dropped.ammo }));
+    this.particles.sparkle(x, y, '#ffe9b0', 8);
   }
 
   /** 某扇门在房内一侧的「穿过」判定区（紧贴边界，覆盖整个门洞宽度）。 */
@@ -1533,8 +1622,9 @@ export class GameplayScene {
         return `获得 ${effect.count} 次强化选择`;
       case 'weapon': {
         const weaponId = rollWeaponId((w) => this.run.rng.weightedIndex(w), player.weapons.map((w) => w.def.id));
-        player.addOrReplaceWeapon(weaponId);
+        const dropped = player.addOrReplaceWeapon(weaponId);
         this.host.save.discoverWeapon(weaponId);
+        if (dropped) this.dropWeapon(player, dropped);
         return `获得武器：${getWeaponDef(weaponId).name}`;
       }
       case 'heal': {
@@ -1715,10 +1805,12 @@ export class GameplayScene {
       item.sold = true;
       const player = this.run.player;
       switch (item.kind) {
-        case 'weapon':
-          player.addOrReplaceWeapon(item.weaponId!);
+        case 'weapon': {
+          const dropped = player.addOrReplaceWeapon(item.weaponId!);
           this.host.save.discoverWeapon(item.weaponId!);
+          if (dropped) this.dropWeapon(player, dropped);
           break;
+        }
         case 'upgrade':
           this.run.addUpgrade(item.upgradeId!);
           break;
@@ -2587,8 +2679,12 @@ function drawPlayerTag(ctx: CanvasRenderingContext2D, player: Player, isLocal: b
 
 function describePickup(p: Pickup, finalFloor: boolean): string {
   switch (p.kind) {
-    case 'weapon':
-      return `拾取武器 ${getWeaponDef(p.data.weaponId ?? WEAPONS[0]!.id).name}`;
+    case 'weapon': {
+      // 地面上带 amount 的是玩家自己换下来的枪，顺带把剩余弹量显示出来
+      const def = getWeaponDef(p.data.weaponId ?? WEAPONS[0]!.id);
+      const left = typeof p.data.amount === 'number' ? `（余弹 ${p.data.amount}）` : '';
+      return `拾取武器 ${def.name}${left}`;
+    }
     case 'chest':
       return p.data.sold ? '宝箱已开启' : '打开宝箱';
     case 'upgradeOrb':

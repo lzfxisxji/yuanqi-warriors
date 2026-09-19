@@ -7,6 +7,7 @@ import {
   defaultSettings,
   parseSave,
 } from '../src/systems/save';
+import { SAVED_RUN_VERSION, type SavedRun } from '../src/systems/run';
 
 describe('存档：健壮性解析', () => {
   test('空 / 非法数据返回默认存档', () => {

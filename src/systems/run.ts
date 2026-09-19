@@ -1,10 +1,10 @@
 /** 单次远征的状态：楼层、金币、强化、武器、统计与得分。 */
-import { RNG } from '../core/math';
+import { RNG, clamp } from '../core/math';
 import type { CharacterDef } from '../data/characters';
 import { addUpgrade, computeMods, defaultMods, rollUpgradeChoices, type Mods, type UpgradeStack } from '../data/upgrades';
 import type { DungeonPlan } from '../dungeon/dungeon';
 import { generateDungeon } from '../dungeon/dungeon';
-import { Player } from '../entities/player';
+import { Player, createWeaponInstance } from '../entities/player';
 
 export interface RunResult {
   floor: number;
@@ -15,6 +15,54 @@ export interface RunResult {
   gold: number;
   score: number;
   characterId: string;
+}
+
+/**
+ * 存档版本：结构变化时递增。解析时缺失字段一律走默认值，因此旧档不会崩。
+ */
+export const SAVED_RUN_VERSION = 1;
+
+export interface SavedWeapon {
+  id: string;
+  ammo: number;
+}
+
+/** 房间级的交互标志：避免续玩时重开已开的宝箱 / 重复触发事件与首领补给站。 */
+export interface SavedRoomFlags {
+  rewardDropped?: boolean;
+  interacted?: boolean;
+  prepShown?: boolean;
+}
+
+/**
+ * 一次远征的完整存档。
+ *
+ * 刻意**不存**房间内的瞬时对象（敌人 / 弹丸 / 地面掉落）：
+ * 地牢由 `seed + floor` 完全决定，恢复时按同一种子重新生成，
+ * 玩家回到存档时所在房间的入口重新开打即可 —— 体积小且不会版本漂移。
+ */
+export interface SavedRun {
+  version: number;
+  characterId: string;
+  seed: number;
+  floor: number;
+  gold: number;
+  upgrades: UpgradeStack[];
+  weapons: SavedWeapon[];
+  weaponIndex: number;
+  hp: number;
+  shield: number;
+  barrier: number;
+  timeSec: number;
+  bossDefeated: boolean;
+  currentRoomKey: string;
+  visited: string[];
+  /** 已清场的房间 key（Boss 房重进时据此补传送门） */
+  cleared: string[];
+  rooms: Record<string, SavedRoomFlags>;
+  stats: RunState['stats'];
+  /** 存档时间戳，用于菜单显示 */
+  savedAt: number;
 }
 
 export class RunState {
@@ -127,5 +175,69 @@ export class RunState {
       score: this.score,
       characterId: this.character.id,
     };
+  }
+
+  // ------------------------------------------------------------- 存档
+
+  /** 把当前远征序列化成可落盘的快照。 */
+  snapshotRun(rooms: Record<string, SavedRoomFlags> = {}, savedAt = Date.now()): SavedRun {
+    const cleared: string[] = [];
+    for (const n of this.plan.nodes.values()) if (n.cleared) cleared.push(n.key);
+    return {
+      version: SAVED_RUN_VERSION,
+      characterId: this.character.id,
+      seed: this.seed,
+      floor: this.floor,
+      gold: this.gold,
+      upgrades: this.upgrades.map((u) => ({ id: u.id, stacks: u.stacks })),
+      weapons: this.player.weapons.map((w) => ({ id: w.def.id, ammo: w.ammo })),
+      weaponIndex: this.player.weaponIndex,
+      hp: this.player.hp,
+      shield: this.player.shield,
+      barrier: this.player.barrier,
+      timeSec: this.timeSec,
+      bossDefeated: this.bossDefeated,
+      currentRoomKey: this.currentRoomKey,
+      visited: [...this.visited],
+      cleared,
+      rooms,
+      stats: { ...this.stats },
+      savedAt,
+    };
+  }
+
+  /**
+   * 用存档恢复远征状态。
+   * 必须在构造完 RunState 之后、进入房间之前调用（`this.plan` 与 `this.player` 都会被重写）。
+   */
+  restoreRun(saved: SavedRun): void {
+    this.floor = Math.max(1, Math.floor(saved.floor) || 1);
+    this.plan = generateDungeon({ seed: this.seedForFloor(this.floor), floor: this.floor });
+    for (const key of saved.cleared) {
+      const n = this.plan.nodes.get(key);
+      if (n) n.cleared = true;
+    }
+    this.visited = new Set(saved.visited.filter((k) => this.plan.nodes.has(k)));
+    this.currentRoomKey = this.plan.nodes.has(saved.currentRoomKey) ? saved.currentRoomKey : this.plan.startKey;
+    this.visited.add(this.currentRoomKey);
+    this.plan.nodes.get(this.currentRoomKey)!.visited = true;
+    this.gold = Math.max(0, Math.floor(saved.gold) || 0);
+    this.upgrades = saved.upgrades.map((u) => ({ id: u.id, stacks: u.stacks }));
+    // 先按强化重算派生属性，再用同样的 mods 建枪（弹匣扩容才生效）
+    this.recomputeMods();
+    const weapons = saved.weapons.length ? saved.weapons : [{ id: this.character.startWeapon, ammo: 0 }];
+    this.player.weapons = weapons.map((w) => {
+      const inst = createWeaponInstance(w.id, this.mods);
+      if (Number.isFinite(w.ammo)) inst.ammo = clamp(Math.floor(w.ammo), 0, inst.magSize);
+      return inst;
+    });
+    this.player.weaponIndex = clamp(Math.floor(saved.weaponIndex) || 0, 0, this.player.weapons.length - 1);
+    this.player.hp = clamp(Math.round(saved.hp) || this.player.maxHp, 1, this.player.maxHp);
+    this.player.shield = clamp(Math.round(saved.shield) || 0, 0, this.player.maxShield);
+    this.player.barrier = Math.max(0, Math.round(saved.barrier) || 0);
+    this.timeSec = Math.max(0, Number(saved.timeSec) || 0);
+    this.bossDefeated = saved.bossDefeated === true;
+    this.stats = { ...this.stats, ...saved.stats };
+    this.rng = new RNG(this.seedForFloor(this.floor) ^ 0xabcdef);
   }
 }

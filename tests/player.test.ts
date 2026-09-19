@@ -315,3 +315,33 @@ describe('玩家：技能冷却', () => {
     expect(p.skillActivePercent).toBeLessThanOrEqual(1);
   });
 });
+
+describe('玩家：换枪掉落（需求16-1）', () => {
+  test('满 2 把时换枪：被换下的枪以 {id, ammo} 返回，不凭空消失', () => {
+    const p = new Player(wolf());
+    p.addOrReplaceWeapon('shotgun'); // 现在 2 把，当前 = shotgun
+    p.currentWeapon.ammo = 7; // 模拟一把「辛苦打的、还剩 7 发」的枪
+    const replacedId = p.currentWeapon.def.id;
+    const replacedAmmo = p.currentWeapon.ammo;
+
+    const dropped = p.addOrReplaceWeapon('sniper');
+    expect(dropped).not.toBeNull();
+    expect(dropped!.id).toBe(replacedId);
+    expect(dropped!.ammo).toBe(replacedAmmo);
+    // 玩家仍只有 2 把，当前枪已换成新枪
+    expect(p.weapons.length).toBe(2);
+    expect(p.currentWeapon.def.id).toBe('sniper');
+  });
+
+  test('捡回地面旧枪时传入 ammo 恢复原余弹（不靠反复换枪刷满弹）', () => {
+    const p = new Player(wolf());
+    p.addOrReplaceWeapon('shotgun');
+    const dropped = p.addOrReplaceWeapon('sniper');
+    expect(dropped).not.toBeNull();
+
+    const back = p.addOrReplaceWeapon(dropped!.id, dropped!.ammo);
+    expect(back).not.toBeNull();
+    expect(p.currentWeapon.def.id).toBe(dropped!.id);
+    expect(p.currentWeapon.ammo).toBe(dropped!.ammo);
+  });
+});

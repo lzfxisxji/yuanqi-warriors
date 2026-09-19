@@ -118,7 +118,13 @@ export interface MenuData {
   unlockedCharacters: string[];
 }
 
-export function buildMenuButtons(state: MenuState): UiButton[] {
+/** 主菜单「继续远征」需要的最少信息（UI 层不直接依赖存档结构）。 */
+export interface SavedRunInfo {
+  floor: number;
+  characterId: string;
+}
+
+export function buildMenuButtons(state: MenuState, savedRun?: SavedRunInfo | null): UiButton[] {
   const buttons: UiButton[] = [];
   switch (state.mode) {
     case 'main': {
@@ -126,7 +132,21 @@ export function buildMenuButtons(state: MenuState): UiButton[] {
       const x = 92;
       // 已在房间内：按钮变成「返回房间」（回到大厅等待，不会掉线）
       const inRoom = state.lobby.phase === 'room' && state.lobby.code.length > 0;
-      buttons.push({ id: 'start', label: '开始远征', x, y: 356, w, h: 52, style: 'accent' });
+      if (savedRun) {
+        // 有未完成的远征：首行拆成「继续远征 / 新的远征」，避免玩家以为只能重开
+        buttons.push({
+          id: 'resume-run',
+          label: `继续远征 · 第 ${savedRun.floor} 层`,
+          x,
+          y: 356,
+          w: 250,
+          h: 52,
+          style: 'accent',
+        });
+        buttons.push({ id: 'start', label: '新的远征', x: 354, y: 356, w: 146, h: 52, style: 'primary' });
+      } else {
+        buttons.push({ id: 'start', label: '开始远征', x, y: 356, w, h: 52, style: 'accent' });
+      }
       buttons.push({
         id: 'multi',
         label: inRoom ? '返回房间' : '联机模式',
@@ -625,7 +645,9 @@ function drawLobby(
     ctx.fillStyle = UI_COLORS.textDim;
     ctx.font = '500 13px "PingFang SC","Segoe UI",sans-serif';
     const desc = b.id === 'mm-mode-coop' ? '共享同一份地牢，敌人一起打，无友伤' : '互相可伤害，最后存活者胜，阵亡后可观战';
-    wrapText(ctx, desc, b.x + 30, b.y + 82, b.w - 60, 18);
+    // 注意：这里的 textAlign 是 'center'（跟着标题设的），wrapText 内部就是直接 fillText，
+    // 所以 x 必须传**卡片水平中心**。传卡片左内边距的话，整行会以那个点为居中向两侧溢出卡片外。
+    wrapText(ctx, desc, b.x + b.w / 2, b.y + 82, b.w - 60, 18);
     ctx.restore();
     }
   }

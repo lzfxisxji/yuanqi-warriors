@@ -1,7 +1,15 @@
 /**
- * 存档：使用浏览器 localStorage，保存设置 / 已解锁角色 / 已发现武器 / 历史最高进度。
+ * 存档：使用浏览器 localStorage，保存设置 / 已解锁角色 / 已发现武器 / 历史最高进度 / 未完成的远征。
  * 存储层做了抽象，便于在 Node 环境下用内存实现做单元测试。
  */
+import type { UpgradeStack } from '../data/upgrades';
+import {
+  SAVED_RUN_VERSION,
+  type RunState,
+  type SavedRoomFlags,
+  type SavedRun,
+  type SavedWeapon,
+} from './run';
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -40,10 +48,12 @@ export interface SaveData {
   unlockedCharacters: string[];
   discoveredWeapons: string[];
   progress: GameProgress;
+  /** 未完成的远征（单机）。为 null 表示没有可续玩的进度。 */
+  run: SavedRun | null;
 }
 
 export const SAVE_KEY = 'yuanqi-warriors:save:v1';
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 export function defaultSettings(): GameSettings {
   return {
@@ -76,6 +86,7 @@ export function defaultSave(): SaveData {
     unlockedCharacters: [],
     discoveredWeapons: [],
     progress: defaultProgress(),
+    run: null,
   };
 }
 
@@ -92,6 +103,86 @@ function num(v: unknown, fallback: number): number {
 function strArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.filter((x): x is string => typeof x === 'string');
+}
+
+/** 校验一份远征存档；任何关键字段不合法就整份丢弃（宁可从头开始，也不要加载出坏档）。 */
+export function parseSavedRun(raw: unknown): SavedRun | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const characterId = typeof o.characterId === 'string' ? o.characterId : '';
+  const seed = typeof o.seed === 'number' && Number.isFinite(o.seed) ? o.seed >>> 0 : NaN;
+  const currentRoomKey = typeof o.currentRoomKey === 'string' ? o.currentRoomKey : '';
+  if (!characterId || Number.isNaN(seed) || !currentRoomKey) return null;
+
+  const upgrades: UpgradeStack[] = [];
+  if (Array.isArray(o.upgrades)) {
+    for (const u of o.upgrades) {
+      if (!u || typeof u !== 'object') continue;
+      const rec = u as Record<string, unknown>;
+      if (typeof rec.id !== 'string') continue;
+      upgrades.push({ id: rec.id, stacks: Math.max(1, Math.floor(num(rec.stacks, 1))) });
+    }
+  }
+
+  const weapons: SavedWeapon[] = [];
+  if (Array.isArray(o.weapons)) {
+    for (const w of o.weapons) {
+      if (!w || typeof w !== 'object') continue;
+      const rec = w as Record<string, unknown>;
+      if (typeof rec.id !== 'string') continue;
+      weapons.push({ id: rec.id, ammo: Math.max(0, Math.floor(num(rec.ammo, 0))) });
+    }
+  }
+  if (!weapons.length) return null;
+
+  const rooms: Record<string, SavedRoomFlags> = {};
+  if (o.rooms && typeof o.rooms === 'object') {
+    for (const [key, flags] of Object.entries(o.rooms as Record<string, unknown>)) {
+      if (!flags || typeof flags !== 'object') continue;
+      const f = flags as Record<string, unknown>;
+      rooms[key] = {
+        rewardDropped: f.rewardDropped === true,
+        interacted: f.interacted === true,
+        prepShown: f.prepShown === true,
+      };
+    }
+  }
+
+  const statsRaw = (o.stats ?? {}) as Record<string, unknown>;
+  const base = defaultRunStats();
+
+  return {
+    version: SAVED_RUN_VERSION,
+    characterId,
+    seed,
+    floor: Math.max(1, Math.floor(num(o.floor, 1))),
+    gold: Math.max(0, Math.floor(num(o.gold, 0))),
+    upgrades,
+    weapons,
+    weaponIndex: Math.max(0, Math.floor(num(o.weaponIndex, 0))),
+    hp: Math.max(1, num(o.hp, 1)),
+    shield: Math.max(0, num(o.shield, 0)),
+    barrier: Math.max(0, num(o.barrier, 0)),
+    timeSec: Math.max(0, num(o.timeSec, 0)),
+    bossDefeated: o.bossDefeated === true,
+    currentRoomKey,
+    visited: strArray(o.visited),
+    cleared: strArray(o.cleared),
+    rooms,
+    stats: {
+      kills: Math.max(0, Math.floor(num(statsRaw.kills, base.kills))),
+      rooms: Math.max(0, Math.floor(num(statsRaw.rooms, base.rooms))),
+      damageDealt: Math.max(0, num(statsRaw.damageDealt, base.damageDealt)),
+      damageTaken: Math.max(0, num(statsRaw.damageTaken, base.damageTaken)),
+      goldEarned: Math.max(0, Math.floor(num(statsRaw.goldEarned, base.goldEarned))),
+      shotsFired: Math.max(0, Math.floor(num(statsRaw.shotsFired, base.shotsFired))),
+    },
+    savedAt: Math.max(0, num(o.savedAt, 0)),
+  };
+}
+
+function defaultRunStats(): RunState['stats'] {
+  return { kills: 0, rooms: 0, damageDealt: 0, damageTaken: 0, goldEarned: 0, shotsFired: 0 };
 }
 
 /** 反序列化并逐字段做健壮性校验，避免旧存档 / 脏数据导致崩溃。 */
@@ -122,6 +213,7 @@ export function parseSave(raw: unknown): SaveData {
     },
     unlockedCharacters: strArray(obj.unlockedCharacters),
     discoveredWeapons: strArray(obj.discoveredWeapons),
+    run: parseSavedRun(obj.run),
     progress: {
       bestFloor: Math.max(1, Math.floor(num(progressRaw.bestFloor, 1))),
       wins: Math.max(0, Math.floor(num(progressRaw.wins, 0))),
@@ -215,6 +307,25 @@ export class SaveManager {
     p.totalKills += result.kills;
     p.totalRooms += result.rooms;
     p.bestScore = Math.max(p.bestScore, result.score);
+    this.save();
+  }
+
+  // ------------------------------------------------------------- 远征存档
+
+  get savedRun(): SavedRun | null {
+    return this.data.run;
+  }
+
+  /** 覆盖写入当前远征进度（自动存档点：进新房间 / 定时心跳）。 */
+  setRun(run: SavedRun): void {
+    this.data.run = run;
+    this.save();
+  }
+
+  /** 远征结束 / 放弃 / 通关后清掉进度，菜单不再提供「继续远征」。 */
+  clearRun(): void {
+    if (this.data.run === null) return;
+    this.data.run = null;
     this.save();
   }
 }
