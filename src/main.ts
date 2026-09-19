@@ -460,7 +460,8 @@ class App implements GameHost {
       })
       .catch(() => {
         if (this.lobbyNet === net) {
-          this.menuState.lobby.status = '错误：无法连接服务器，请先在项目目录运行 npm run server';
+          this.menuState.lobby.status =
+            '错误：无法连接中继服务器（免费云休眠时约 1 分钟后重试；本地联机请先运行 npm run server）';
         }
       });
   }
@@ -481,6 +482,11 @@ class App implements GameHost {
   private createRoom(): void {
     const net = this.lobbyNet;
     if (!net) return;
+    // 未连上就点创建：send 会被静默丢弃，界面永远停在"正在创建房间…"——必须显式报错
+    if (!net.connected) {
+      this.menuState.lobby.status = '错误：尚未连接到服务器，等下方显示"已连接服务器"再创建';
+      return;
+    }
     this.closeNameEditor();
     this.menuState.lobby.status = '正在创建房间…';
     net.send({
@@ -495,6 +501,10 @@ class App implements GameHost {
   private joinRoom(): void {
     const net = this.lobbyNet;
     if (!net) return;
+    if (!net.connected) {
+      this.menuState.lobby.status = '错误：尚未连接到服务器，等下方显示"已连接服务器"再加入';
+      return;
+    }
     this.closeNameEditor();
     const code = this.menuState.lobby.codeInput.trim().toUpperCase();
     if (code.length !== 4) {
