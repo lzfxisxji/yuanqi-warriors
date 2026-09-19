@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+*.log
+_env.txt
+.workbuddy/
+# 会话临时输出文件
+.*.txt

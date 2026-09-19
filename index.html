@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>元气勇士 · 裂隙地牢</title>
+    <meta name="description" content="原创俯视角地牢射击 Roguelike - TypeScript + Canvas 2D" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231a1626'/%3E%3Ccircle cx='32' cy='34' r='15' fill='none' stroke='%23ffd479' stroke-width='4'/%3E%3Cpath d='M32 8v10M32 50v6M8 34h8M48 34h8' stroke='%23ffd479' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='34' r='6' fill='%23ff7a45'/%3E%3C/svg%3E"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0b0912;
+        font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+          radial-gradient(circle at 50% 40%, #1d1730 0%, #0b0912 70%);
+      }
+      #game {
+        display: block;
+        image-rendering: auto;
+        box-shadow: 0 0 90px rgba(0, 0, 0, 0.85);
+        background: #0b0912;
+        /* 默认显示系统光标；真正进入地牢操控角色时才由脚本切成自绘准星 */
+        cursor: default;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        color: #ffd479;
+        letter-spacing: 0.32em;
+        font-size: 14px;
+        background: #0b0912;
+        z-index: 10;
+        transition: opacity 0.5s ease;
+      }
+      #boot.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .boot-ring {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 212, 121, 0.2);
+        border-top-color: #ffd479;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      #fatal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        padding: 48px;
+        overflow: auto;
+        background: #150c12;
+        color: #ffb4b4;
+        font-family: Consolas, monospace;
+        font-size: 13px;
+        white-space: pre-wrap;
+        z-index: 20;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game" width="1280" height="720"></canvas>
+    </div>
+    <div id="boot">
+      <div class="boot-ring"></div>
+      <div>正在开凿地牢…</div>
+    </div>
+    <pre id="fatal"></pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

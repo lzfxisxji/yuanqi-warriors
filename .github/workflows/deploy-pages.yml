@@ -1,0 +1,50 @@
+# 元气勇士 · 前端部署到 GitHub Pages
+#
+# 注意：GitHub Pages 只能托管静态前端，**托管不了 WebSocket 中继**。
+# 联机时朋友需要在 URL 后带 ?server=wss://<中继地址> 指向你托管中继的地方
+# （Render 单服务 / 本机内网穿透），详见对话里的部署说明。
+#
+# 前置条件（仓库 Settings → Pages）：
+#   Source 选择 “GitHub Actions”，之后每次 push 到 main 自动构建部署。
+name: Deploy Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
