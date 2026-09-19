@@ -1,0 +1,10 @@
+# Render.com 部署蓝图：https://dashboard.render.com → New → Blueprint → 选本仓库
+# 一个免费 Web Service 同时托管前端（dist/）与 WebSocket 中继，同端口同源。
+# 免费版 15 分钟无流量会休眠，下次访问冷启动约 1 分钟；WebSocket 免费版支持。
+services:
+  - type: web
+    name: yuanqi-warriors
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: node server/relay.mjs
