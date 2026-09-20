@@ -1632,11 +1632,14 @@ export function drawBossPortrait(
 ): void {
   const r = def.radius;
   const sprite = getBossSprite(def);
-  const worldH = r * BOSS_SPRITE_SCALE;
-  // 位图按素材宽高比算；程序化 Boss 的外形大致是半径 ×2.6 的圆盘，宽高同值
-  const worldW = sprite ? worldH * (sprite.img.naturalWidth / sprite.img.naturalHeight) : worldH;
+  // 「世界尺寸」= 该 Boss 在游戏内的**包围盒全宽 / 全高**（不是半径，也与绘制高不同口径）：
+  //   位图：drawBossBitmap 的绘制高就是半径 × BOSS_SPRITE_SCALE，宽按素材比例；
+  //   程序化：碰撞半径只是**半径**，外形还会被旋转甲片撑到约 1.92r，故全尺寸取 4r。
+  // 这两者以前混用过一次 —— 程序化 Boss 的甲片直接顶到简介文字上，图里能看到压字。
+  const fullH = sprite ? r * BOSS_SPRITE_SCALE : r * 4;
+  const fullW = sprite ? fullH * (sprite.img.naturalWidth / sprite.img.naturalHeight) : fullH;
   // 高和宽都要装得下：宽体型的 Boss 只按高度缩放会横向溢出面板
-  const scale = Math.min(boxW / Math.max(1, worldW), boxH / Math.max(1, worldH));
+  const scale = Math.min(boxW / Math.max(1, fullW), boxH / Math.max(1, fullH));
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -1659,7 +1662,7 @@ export function drawBossPortrait(
   ctx.restore();
 
   if (sprite) {
-    ctx.drawImage(sprite.img, -worldW / 2, -worldH / 2, worldW, worldH);
+    ctx.drawImage(sprite.img, -fullW / 2, -fullH / 2, fullW, fullH);
   } else {
     // 静止预览：固定 2 阶段（不狂暴），面向正下方，甲片缓慢自转
     drawBossProgrammatic(

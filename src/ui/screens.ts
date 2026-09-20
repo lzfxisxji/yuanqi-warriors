@@ -1110,6 +1110,9 @@ function skillSummary(def: CharacterDef): string {
   return `${base} · 护盾 ${s.shieldAmount} 点`;
 }
 
+/** 详情面板里条目标题用的字体（Boss 分页要靠它 measureText 定位称号，别再抄一遍）。 */
+const CODEX_TITLE_FONT = '800 26px "PingFang SC","Segoe UI",sans-serif';
+
 function drawCodex(
   ctx: CanvasRenderingContext2D,
   state: MenuState,
@@ -1184,7 +1187,7 @@ function drawCodex(
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = UI_COLORS.text;
-  ctx.font = '800 26px "PingFang SC","Segoe UI",sans-serif';
+  ctx.font = CODEX_TITLE_FONT;
   ctx.fillText(known ? item.name : '？？？', 492, 202);
   drawDivider(ctx, 492, 228, 660);
   ctx.fillStyle = UI_COLORS.textDim;
@@ -1263,12 +1266,16 @@ function drawCodex(
     // Boss 图鉴：立绘 + 战斗数值 + 攻击方式
     const def = item as BossDef;
 
-    // 称号跟在名字右边。用 measureText 定位而不是写死 x —— 否则名字一长就压字。
+    // 称号跟在名字右边，位置用 measureText 算而不是写死 x（名字一长就压字）。
+    // ⚠️ 必须用**标题字体**去量：名字是 26px，这里若用 15px 量，宽度会只有一半，
+    // 画出来就是称号直接盖在名字上（截图里验证过）。
     ctx.save();
     ctx.textAlign = 'left';
+    ctx.font = CODEX_TITLE_FONT;
+    const nameW = ctx.measureText(def.name).width;
     ctx.font = '600 15px "PingFang SC","Segoe UI",sans-serif';
     ctx.fillStyle = UI_COLORS.textDim;
-    ctx.fillText(def.title, 492 + ctx.measureText(def.name).width + 14, 204);
+    ctx.fillText(def.title, 492 + nameW + 16, 205);
     ctx.restore();
 
     // 立绘：缩放口径与游戏内一致（见 drawBossPortrait），所以图鉴里的比例就是实战比例。

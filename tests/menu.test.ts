@@ -36,13 +36,28 @@ interface DrawnText {
   y: number;
 }
 
-function recordingCtx(): { ctx: CanvasRenderingContext2D; texts: DrawnText[] } {
+/** 一次 measureText 调用：文本 + 调用当时的 font + 返回的宽度。 */
+interface MeasuredText {
+  text: string;
+  font: string;
+  width: number;
+}
+
+function recordingCtx(): { ctx: CanvasRenderingContext2D; texts: DrawnText[]; measured: MeasuredText[] } {
   const texts: DrawnText[] = [];
+  const measured: MeasuredText[] = [];
   const store: Record<string, unknown> = {
     createLinearGradient: () => ({ addColorStop: () => undefined }),
     createRadialGradient: () => ({ addColorStop: () => undefined }),
     createPattern: () => null,
-    measureText: (t: string) => ({ width: [...String(t)].length * 8 }),
+    // 宽度只用「字符数 × 8」估算，**故意与 font 无关** —— 这样坐标断言不会因为
+    // 换字体而漂移。但会把调用当时的 font 记下来，供「量宽度时用错了字号」这类
+    // 断言使用（那种 bug 靠坐标是抓不到的，见 Boss 图鉴的称号用例）。
+    measureText: (t: string) => {
+      const width = [...String(t)].length * 8;
+      measured.push({ text: String(t), font: String(store.font ?? ''), width });
+      return { width };
+    },
     setLineDash: () => undefined,
     getLineDash: () => [],
   };
@@ -64,7 +79,7 @@ function recordingCtx(): { ctx: CanvasRenderingContext2D; texts: DrawnText[] } {
       return true;
     },
   }) as unknown as CanvasRenderingContext2D;
-  return { ctx, texts };
+  return { ctx, texts, measured };
 }
 
 const PROGRESS: GameProgress = {
@@ -96,6 +111,13 @@ function render(state: MenuState): DrawnText[] {
   const { ctx, texts } = recordingCtx();
   drawMenu(ctx, state, buildMenuButtons(state), null, 0.5, menuData());
   return texts;
+}
+
+/** 同上，但把 measureText 的调用明细也带出来（要断言「用对字体量宽度」时用）。 */
+function renderAll(state: MenuState): { texts: DrawnText[]; measured: MeasuredText[] } {
+  const { ctx, texts, measured } = recordingCtx();
+  drawMenu(ctx, state, buildMenuButtons(state), null, 0.5, menuData());
+  return { texts, measured };
 }
 
 function toRoom(state: MenuState, mode: 'coop' | 'pk' = 'coop'): void {
@@ -342,6 +364,24 @@ describe('图鉴分页', () => {
     for (let i = 1; i < tabs.length; i++) {
       expect(tabs[i]!.x).toBeGreaterThanOrEqual(tabs[i - 1]!.x + tabs[i - 1]!.w);
     }
+  });
+
+  test('Boss 图鉴：称号必须用「标题字号」量过名字宽度后才落笔（否则会压字）', () => {
+    const idx = BOSSES.findIndex((b) => b.id === 'doubao');
+    const def = BOSSES[idx]!;
+    const { texts, measured } = renderAll(codexState('boss', idx));
+
+    // 信息：名字是 26px 标题字体画的，称号是 15px。若拿 15px 去量名字宽度，
+    // 量出来只有一半，称号就会直接盖在名字上（真机截图里出现过）。
+    const nameMeasure = measured.filter((m) => m.text === def.name);
+    expect(nameMeasure.length).toBeGreaterThan(0);
+    expect(nameMeasure.some((m) => m.font.includes('26px'))).toBe(true);
+
+    const name = texts.find((t) => t.text === def.name);
+    const title = texts.find((t) => t.text === def.title);
+    expect(name).toBeDefined();
+    expect(title).toBeDefined();
+    expect(title!.x).toBeGreaterThanOrEqual(name!.x + nameMeasure[0]!.width);
   });
 
   test('切到 Boss 分页：左列表条目数等于 Boss 数（不是角色数）', () => {
