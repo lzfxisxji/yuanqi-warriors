@@ -13,7 +13,8 @@ import type { Enemy } from '../entities/enemy';
 import type { Boss } from '../entities/boss';
 import type { Player } from '../entities/player';
 import type { Pickup } from '../entities/pickup';
-import { getCharacterSprite } from './sprites';
+import { getCharacterSprite, getBossSprite } from './sprites';
+import { BOSS_SPRITE_SCALE } from '../data/config';
 
 // ------------------------------------------------------------------ 颜色工具
 
@@ -628,7 +629,22 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: num
 
   ctx.save();
   ctx.translate(0, bobY);
-  switch (def.shape) {
+  // 位图分支：带 sprite 的敌人（豆包召唤的"伙伴"等）直接画抠好的角色立绘，跳过矢量绘制
+  const spriteEntry = def.sprite ? getCharacterSprite({ sprite: def.sprite } as CharacterDef) : null;
+  if (spriteEntry) {
+    const drawH = r * 2.25;
+    const drawW = drawH * (spriteEntry.img.naturalWidth / spriteEntry.img.naturalHeight);
+    ctx.drawImage(spriteEntry.img, -drawW / 2, -drawH / 2, drawW, drawH);
+    if (flash) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = clamp(enemy.hitFlash / 0.16, 0, 1) * 0.5;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(-drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.restore();
+    }
+  } else {
+    switch (def.shape) {
     case 'grub':
       drawGrub(ctx, r, pal, enemy, flash, time);
       break;
@@ -653,6 +669,7 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: num
     case 'brute':
       drawBrute(ctx, r, pal, enemy, flash, time);
       break;
+  }
   }
   ctx.restore();
 
@@ -1323,6 +1340,135 @@ export function drawBoss(ctx: CanvasRenderingContext2D, boss: Boss, time: number
   const bob = Math.sin(time * 2.2) * 4;
   ctx.translate(0, bob);
 
+  const sprite = boss.def.sprite ? getBossSprite(boss.def) : null;
+  if (sprite) {
+    drawBossBitmap(ctx, boss, sprite, r, flash, time);
+  } else {
+    drawBossProgrammatic(ctx, boss, r, flash, time);
+  }
+
+  // 受击环
+  if (boss.hitFlashRing > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = boss.hitFlashRing * 0.5;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ellipsePath(ctx, 0, 0, r * (1.2 + (1 - boss.hitFlashRing) * 1.2), r * (1.15 + (1 - boss.hitFlashRing) * 1.15));
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 阶段切换护盾
+  if (boss.invulnTimer > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.4 + Math.sin(time * 26) * 0.16;
+    ctx.strokeStyle = '#9fe8ff';
+    ctx.lineWidth = 3.4;
+    ellipsePath(ctx, 0, 0, r * 1.75, r * 1.7);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 扫射激光
+  if (boss.beamActive) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const len = 1500;
+    const ex = Math.cos(boss.beamAngle) * len;
+    const ey = Math.sin(boss.beamAngle) * len;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = `rgba(${boss.def.palette.glow},1)`;
+    ctx.globalAlpha = 0.4;
+    ctx.lineWidth = 62;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 30;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = boss.def.palette.bullet;
+    ctx.lineWidth = 13 + Math.sin(time * 40) * 2;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  // 受击闪白
+  if (flash) {
+    ctx.save();
+    ctx.globalAlpha = clamp(boss.hitFlash / 0.14, 0, 1) * 0.32;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = '#ffffff';
+    ellipsePath(ctx, boss.x, boss.y, r * 1.1, r * 1.06);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/**
+ * 位图 Boss：直接把 role 里抠好的正面立绘按 `半径 × BOSS_SPRITE_SCALE` 的尺寸居中绘制。
+ * 立绘是透明 PNG（drawImage 不会覆盖背景），先补一层按 Boss 配色的轻辉光，再画本体，
+ * 受击时叠一层闪白。宽高比取自图片自身，绝不写死宽度。
+ */
+function drawBossBitmap(
+  ctx: CanvasRenderingContext2D,
+  boss: Boss,
+  sprite: { img: HTMLImageElement; ready: boolean; failed: boolean },
+  r: number,
+  flash: boolean,
+  _time: number,
+): void {
+  const drawH = r * BOSS_SPRITE_SCALE;
+  const drawW = drawH * (sprite.img.naturalWidth / sprite.img.naturalHeight);
+
+  // 立绘背后的轻辉光（用 Boss 配色）
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const rg = ctx.createRadialGradient(0, 0, r * 0.4, 0, 0, r * 2.2);
+  rg.addColorStop(0, withAlpha(boss.def.palette.glow, 0.3));
+  rg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = rg;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 2.2, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+
+  // 立绘本体
+  ctx.drawImage(sprite.img, -drawW / 2, -drawH / 2, drawW, drawH);
+
+  // 受击闪白覆盖
+  if (flash) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = clamp(boss.hitFlash / 0.14, 0, 1) * 0.5;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(-drawW / 2, -drawH / 2, drawW, drawH);
+    ctx.restore();
+  }
+}
+
+/**
+ * 程序化 Boss 绘制（第 1 层「熔核·渊心」本体，以及位图 Boss 在 PNG 缺失时的兜底）。
+ * 原本是 drawBoss 的内联逻辑，抽到这里方便两种分支共用外层的变换 / 受击环 / 护盾 / 激光。
+ */
+function drawBossProgrammatic(
+  ctx: CanvasRenderingContext2D,
+  boss: Boss,
+  r: number,
+  flash: boolean,
+  time: number,
+): void {
   const enraged = boss.phase >= 3;
   const coreColor = enraged ? '#ff5a2b' : boss.phase >= 2 ? '#ff9a3c' : '#ffc46a';
   const glowColor = enraged ? '#ff3a1a' : '#ff8a3c';
@@ -1447,74 +1593,6 @@ export function drawBoss(ctx: CanvasRenderingContext2D, boss: Boss, time: number
     ctx.lineTo(Math.cos(a + 0.24) * r * 0.95, Math.sin(a + 0.24) * r * 0.93);
     ctx.closePath();
     ctx.fill();
-  }
-
-  // 受击环
-  if (boss.hitFlashRing > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = boss.hitFlashRing * 0.5;
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 3;
-    ellipsePath(ctx, 0, 0, r * (1.2 + (1 - boss.hitFlashRing) * 1.2), r * (1.15 + (1 - boss.hitFlashRing) * 1.15));
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 阶段切换护盾
-  if (boss.invulnTimer > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.4 + Math.sin(time * 26) * 0.16;
-    ctx.strokeStyle = '#9fe8ff';
-    ctx.lineWidth = 3.4;
-    ellipsePath(ctx, 0, 0, r * 1.75, r * 1.7);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 扫射激光
-  if (boss.beamActive) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    const len = 1500;
-    const ex = Math.cos(boss.beamAngle) * len;
-    const ey = Math.sin(boss.beamAngle) * len;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = '#ff3a2a';
-    ctx.globalAlpha = 0.4;
-    ctx.lineWidth = 62;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(ex, ey);
-    ctx.stroke();
-    ctx.globalAlpha = 0.8;
-    ctx.lineWidth = 30;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(ex, ey);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = '#fff2d0';
-    ctx.lineWidth = 13 + Math.sin(time * 40) * 2;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(ex, ey);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  ctx.restore();
-
-  // 受击闪白
-  if (flash) {
-    ctx.save();
-    ctx.globalAlpha = clamp(boss.hitFlash / 0.14, 0, 1) * 0.32;
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = '#ffffff';
-    ellipsePath(ctx, boss.x, boss.y, r * 1.1, r * 1.06);
-    ctx.fill();
-    ctx.restore();
   }
 }
 

@@ -30,6 +30,7 @@ const { PNG } = require('pngjs');
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC_DIR = join(ROOT, 'role');
 const OUT_DIR = join(ROOT, 'public', 'characters');
+const BOSS_OUT_DIR = join(ROOT, 'public', 'bosses');
 
 /** 与逐行背景基准色的允许距离（平方，越小越严格）。 */
 const TOLERANCE = 14 * 14;
@@ -46,6 +47,8 @@ const BG_TOLERANCE = 16 * 16;
 const BG_LUMA_BIAS = 6;
 /** 立绘统一输出高度（宽按比例）。两个角色共用，保证场上大小一致。 */
 const OUT_H = 320;
+/** Boss 立绘输出高度（比角色立绘稍大，Boss 在场上本来就更醒目）。 */
+const BOSS_OUT_H = 360;
 
 /**
  * 每张设定图只取**正面立绘**（用户要求：三视图里只要参考图，不需要侧面/背面）。
@@ -90,6 +93,25 @@ const SLUGS = {
   '角色-肥嘟袋鼠.png': { key: 'fatkangaroo', display: '肥嘟袋鼠' },
   '角色-奶龙.png': { key: 'milkdragon', display: '奶龙' },
   '角色-牛来.png': { key: 'niulai', display: '牛来' },
+};
+
+/**
+ * Boss 设定图（boss-豆包.png / boss-deepseek.png）沿用同一套四格模板：
+ * [挥手大图] [正面] [侧面] [背面]，格间有细分隔线。
+ * 下面只取「正面格」，box 与 seed 用 tools/diag-boss.mjs 量出：
+ *   - 豆包（1747×900）：大图 x40-578；正面格 x676-892，角色 y197-857；seed 躯干中心 (784,540)。
+ *   - DeepSeek（1748×900）：大图 x16-708；正面格 x714-1026，角色 y201-862；seed (870,545)。
+ * 抠完由 keepSeededBlob 从种子收紧到主体，自动排除可能残留的「正面」文字标板。
+ */
+const LAYOUTS_BOSS = {
+  doubao: { slug: 'doubao', box: { x0: 676, x1: 892, y0: 195, y1: 857 }, seed: { x: 784, y: 540 } },
+  deepseek: { slug: 'deepseek', box: { x0: 714, x1: 1026, y0: 200, y1: 862 }, seed: { x: 870, y: 545 } },
+};
+
+/** Boss 文件名 -> { 布局, 显示名 }。 */
+const SLUGS_BOSS = {
+  'boss-豆包.png': { key: 'doubao', display: '豆包' },
+  'boss-deepseek.png': { key: 'deepseek', display: 'DeepSeek' },
 };
 
 function sqDist(r1, g1, b1, r2, g2, b2) {
@@ -214,26 +236,46 @@ function keepSeededBlob(alpha, width, box, seed) {
     for (let x = x0; x <= x1; x++) ink[idx(x, y)] = alpha[y * width + x] > 60 ? 1 : 0;
   }
 
-  // 种子：从给定点出发，若它恰好落在透明处，就在附近螺旋找一个墨迹像素
+  // 种子：优先用给定点；若它恰好落在透明处（如 DeepSeek 正面角色中间有镂空），
+  // 先退回 box 内**墨迹质心**（最稳，必然落在主体上），质心也落空再螺旋搜索（半径 80）。
+  // DeepSeek 种子 (870,545) 原落在镂空，曾只抠出 19×9，靠质心兜底修复到完整主体。
   let sx = seed.x - x0;
   let sy = seed.y - y0;
   if (!ink[sy * bw + sx]) {
-    let found = false;
-    for (let r = 1; r <= 60 && !found; r++) {
-      for (let dy = -r; dy <= r && !found; dy++) {
-        for (let dx = -r; dx <= r && !found; dx++) {
-          const px = sx + dx;
-          const py = sy + dy;
-          if (px < 0 || py < 0 || px >= bw || py >= bh) continue;
-          if (ink[py * bw + px]) {
-            sx = px;
-            sy = py;
-            found = true;
-          }
+    let cx = 0;
+    let cy = 0;
+    let total = 0;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (ink[idx(x, y)]) {
+          cx += x - x0;
+          cy += y - y0;
+          total++;
         }
       }
     }
-    if (!found) return null;
+    if (total > 0) {
+      sx = Math.round(cx / total);
+      sy = Math.round(cy / total);
+    }
+    if (!ink[sy * bw + sx]) {
+      let found = false;
+      for (let r = 1; r <= 80 && !found; r++) {
+        for (let dy = -r; dy <= r && !found; dy++) {
+          for (let dx = -r; dx <= r && !found; dx++) {
+            const px = sx + dx;
+            const py = sy + dy;
+            if (px < 0 || py < 0 || px >= bw || py >= bh) continue;
+            if (ink[py * bw + px]) {
+              sx = px;
+              sy = py;
+              found = true;
+            }
+          }
+        }
+      }
+      if (!found) return null;
+    }
   }
 
   const mask = new Uint8Array(bw * bh);
@@ -329,7 +371,7 @@ function resize(src, outW, outH) {
  * 处理一张设定图：去背景 → 只留正面格内最大的连通块 → 统一高度输出。
  * 侧面/背面按用户要求丢弃。
  */
-function process(srcPath, layout, displayName) {
+function process(srcPath, layout, displayName, outDir, outH) {
   const png = PNG.sync.read(readFileSync(srcPath));
   const { alpha, bgCount } = buildAlpha(png);
   const log = [
@@ -346,30 +388,44 @@ function process(srcPath, layout, displayName) {
   );
 
   const cut = cropByBox(png, alpha, blob);
-  const scale = OUT_H / cut.height;
+  const scale = outH / cut.height;
   const outW = Math.max(1, Math.round(cut.width * scale));
-  const scaled = resize(cut, outW, OUT_H);
-  const dst = join(OUT_DIR, `${layout.slug}.png`);
+  const scaled = resize(cut, outW, outH);
+  const dst = join(outDir, `${layout.slug}.png`);
   writeFileSync(dst, PNG.sync.write(scaled));
-  log.push(`   -> public/characters/${layout.slug}.png ${outW}x${OUT_H} ${statSync(dst).size}B`);
+  log.push(`   -> ${outDir.split(/[\\/]/).pop()}/${layout.slug}.png ${outW}x${outH} ${statSync(dst).size}B`);
   return log;
 }
 
 function main() {
   if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
+  if (!existsSync(BOSS_OUT_DIR)) mkdirSync(BOSS_OUT_DIR, { recursive: true });
   const only = (globalThis.process?.argv ?? []).slice(2);
-  const files = readdirSync(SRC_DIR)
+  const lines = [];
+
+  // 角色立绘
+  const charFiles = readdirSync(SRC_DIR)
     .filter((f) => f.toLowerCase().endsWith('.png'))
     .filter((f) => only.length === 0 || only.includes(SLUGS[f]?.key ?? ''));
-  const lines = [];
-  for (const f of files) {
+  for (const f of charFiles) {
     const info = SLUGS[f];
+    if (!info) continue;
+    lines.push(...process(join(SRC_DIR, f), LAYOUTS[info.key], info.display, OUT_DIR, OUT_H));
+  }
+
+  // Boss 立绘
+  const bossFiles = readdirSync(SRC_DIR)
+    .filter((f) => f.toLowerCase().endsWith('.png'))
+    .filter((f) => only.length === 0 || only.includes(SLUGS_BOSS[f]?.key ?? ''));
+  for (const f of bossFiles) {
+    const info = SLUGS_BOSS[f];
     if (!info) {
-      lines.push(`${f}: 未登记版式，跳过（如需处理请补 LAYOUTS/SLUGS）`);
+      lines.push(`${f}: 未登记版式，跳过（如需处理请补 LAYOUTS_BOSS/SLUGS_BOSS）`);
       continue;
     }
-    lines.push(...process(join(SRC_DIR, f), LAYOUTS[info.key], info.display));
+    lines.push(...process(join(SRC_DIR, f), LAYOUTS_BOSS[info.key], info.display, BOSS_OUT_DIR, BOSS_OUT_H));
   }
+
   writeFileSync(join(ROOT, '.cutout-log.txt'), lines.join('\n'), 'utf8');
 }
 

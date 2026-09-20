@@ -84,8 +84,16 @@ export const BOSS_DEATH_SLOWMO = 0.4;
 /** 死亡演出期间两次爆炸之间的间隔（秒，真实时间） */
 export const BOSS_DEATH_EXPLOSION_INTERVAL = 0.07;
 
-/** 楼层数量：打完最后一层 Boss 即通关结算。 */
-export const FLOOR_COUNT = 2;
+/**
+ * 位图 Boss 的绘制高度系数：Boss 立绘（public/bosses/<slug>.png）按
+ * `高度 = 碰撞半径 × 此系数` 居中绘制，宽度按图片宽高比算。
+ * 数值参考第一关程序化 Boss「熔核·渊心」的整体视觉大小（2.6 × 半径 ≈ 外辉光直径）。
+ * 想调 Boss 看起来多大只改这一个常量。
+ */
+export const BOSS_SPRITE_SCALE = 2.6;
+
+/** 楼层数量：打完最后一层 Boss 即通关结算。每层 Boss 各不相同（见 src/data/bosses.ts）。 */
+export const FLOOR_COUNT = 3;
 
 /** 拾取物吸附。 */
 export const PICKUP_MAGNET_RANGE = 108;

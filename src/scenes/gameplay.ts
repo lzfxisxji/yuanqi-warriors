@@ -36,6 +36,7 @@ import { EVENTS, type EventEffect, type EventOption } from '../data/events';
 import { getEnemyDef } from '../data/enemies';
 import { doorEntryPoint, doorRect, generateRoomLayout, DOOR_TRIGGER_DEPTH, Room } from '../dungeon/room';
 import { Boss } from '../entities/boss';
+import { getBossDefForFloor } from '../data/bosses';
 import { Enemy, type EnemyWorld } from '../entities/enemy';
 import { Player } from '../entities/player';
 import { Pickup, scatterGold, type PickupKind } from '../entities/pickup';
@@ -528,7 +529,8 @@ export class GameplayScene {
   }
 
   private startBossRoom(): void {
-    this.boss = new Boss(ROOM_W / 2, ROOM_H / 2 - 60, this.run.floor);
+    const def = getBossDefForFloor(this.run.floor);
+    this.boss = new Boss(ROOM_W / 2, ROOM_H / 2 - 60, def);
     this.host.audio.play('bossRoar', 1);
     this.host.audio.setMusicIntensity(1);
     this.shake.add(0.55);
@@ -2500,7 +2502,7 @@ export class GameplayScene {
 
     // 首领
     if (s.boss && !s.boss.dead) {
-      const b = new Boss(s.boss.x, s.boss.y, s.floor);
+      const b = new Boss(s.boss.x, s.boss.y, getBossDefForFloor(s.floor));
       b.hp = s.boss.hp;
       b.maxHp = s.boss.maxHp;
       b.phase = s.boss.phase;

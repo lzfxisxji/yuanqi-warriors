@@ -78,6 +78,9 @@ export interface EnemyDef {
   knockbackResist: number;
   palette: { body: string; dark: string; accent: string; glow: string };
   shape: EnemyShape;
+  /** 位图立绘 slug（public/characters/<slug>.png）；有值时 drawEnemy 优先画位图，跳过矢量绘制。
+   *  用于 Boss 召唤的"伙伴"等复用角色立绘的敌人。 */
+  sprite?: string;
   /** 索敌方式：'self' 自身感知，'room' 全房索敌（精英） */
   awareness: 'self' | 'room';
 }
@@ -280,8 +283,60 @@ export const ENEMIES: EnemyDef[] = [
   },
 ];
 
+/**
+ * 豆包（第 2 层 Boss）技能三「召唤伙伴」召唤的四个伙伴。
+ * 它们复用角色立绘（role 里抠好的正面 PNG），用位图绘制，行为和普通近战小怪一致。
+ * **它们不进 `ENEMIES`**（避免混进普通战斗波次与图鉴），而是单独的 `SUMMON_ENEMIES`，
+ * 只由 Boss 的 `summonIds` 经 `getEnemyDef()` 取用。id 前缀 `pal_` 避免命名冲突。
+ */
+function palCompanion(
+  id: string,
+  name: string,
+  sprite: string,
+  glow: string,
+): EnemyDef {
+  return {
+    id,
+    name,
+    desc: '豆包召唤来的伙伴，憨态可掬却会朝你直冲，被咬中会连续掉血。',
+    elite: false,
+    tier: 2,
+    hp: 90,
+    speed: 124,
+    radius: 18,
+    contactDamage: 18,
+    detectRange: 760,
+    keepRange: 0,
+    attackCooldown: 1.4,
+    windup: 0.3,
+    recover: 0.4,
+    ai: 'melee',
+    gold: [3, 6],
+    score: 18,
+    knockbackResist: 0.3,
+    palette: { body: '#f5c542', dark: '#c4881f', accent: '#ff8a3d', glow },
+    shape: 'grub',
+    sprite,
+    awareness: 'room',
+  };
+}
+
+/**
+ * Boss 召唤的专属敌人池。**刻意与 ENEMIES 分开** —— 它们不进普通战斗波次、
+ * 不进图鉴，只由 Boss 的 `summonIds` 经 `getEnemyDef()` 取用（见 ALL_ENEMIES）。
+ */
+export const SUMMON_ENEMIES: EnemyDef[] = [
+  palCompanion('pal_lulu', '噜噜·伙伴', 'lulu', '#ffb454'),
+  palCompanion('pal_fatkangaroo', '肥嘟袋鼠·伙伴', 'fatkangaroo', '#ffb454'),
+  palCompanion('pal_milkdragon', '奶龙·伙伴', 'milkdragon', '#ffd84d'),
+  palCompanion('pal_niulai', '牛来·伙伴', 'niulai', '#ffc933'),
+];
+
+/** 全部可被 getEnemyDef 解析的敌人（基础表 + 召唤专属）。 */
+const ALL_ENEMIES: EnemyDef[] = [...ENEMIES, ...SUMMON_ENEMIES];
+
 export function getEnemyDef(id: string): EnemyDef {
-  const d = ENEMIES.find((e) => e.id === id);
+  const d = ALL_ENEMIES.find((e) => e.id === id);
   if (!d) throw new Error(`未知敌人 id: ${id}`);
   return d;
 }

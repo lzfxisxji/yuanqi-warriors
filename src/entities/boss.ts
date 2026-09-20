@@ -15,6 +15,7 @@ import type { HitOptions } from '../systems/combat';
 import { GameEvents } from '../core/eventbus';
 import { Entity } from './entity';
 import type { EnemyWorld } from './enemy';
+import type { BossDef } from '../data/bosses';
 
 export type BossState = 'intro' | 'move' | 'windup' | 'attack' | 'recover' | 'transition' | 'dead';
 
@@ -43,8 +44,14 @@ const PHASE_THRESHOLDS = [0.66, 0.33];
 
 export class Boss extends Entity {
   override team = 'enemy' as const;
-  readonly name = '熔核·渊心';
-  readonly title = '深渊构筑体';
+  /** 数据定义（每一层一个，见 src/data/bosses.ts）。 */
+  readonly def: BossDef;
+  get name(): string {
+    return this.def.name;
+  }
+  get title(): string {
+    return this.def.title;
+  }
   floor: number;
   state: BossState = 'intro';
   stateTime = 0;
@@ -54,6 +61,8 @@ export class Boss extends Entity {
   invulnTimer = 0;
   /** 当前攻击 */
   attack: BossAttackKind = 'fanSpread';
+  /** 终极技是否已触发（每个 Boss 只触发一次） */
+  private usedUltimate = false;
   attackCooldown = 2.2;
   telegraph: TelegraphInfo = {
     kind: 'none',
@@ -87,13 +96,14 @@ export class Boss extends Entity {
   /** 已进行的攻击轮数 */
   attackCount = 0;
 
-  constructor(x: number, y: number, floor: number) {
+  constructor(x: number, y: number, def: BossDef) {
     super();
-    this.floor = floor;
+    this.def = def;
+    this.floor = def.floor;
     this.x = x;
     this.y = y;
-    this.radius = 52;
-    this.maxHp = Math.round(2100 + 900 * (floor - 1));
+    this.radius = def.radius;
+    this.maxHp = Math.round(def.baseHp + def.hpPerFloor * (def.floor - 1));
     this.hp = this.maxHp;
     this.knockbackResist = 1;
     this.facing = Math.PI / 2;
@@ -106,7 +116,7 @@ export class Boss extends Entity {
 
   /** 接触伤害（每秒），由场景按节拍结算。 */
   get contactDamage(): number {
-    return 32 + this.floor * 7;
+    return this.def.contactDamageBase + this.def.contactDamagePerFloor * (this.def.floor - 1);
   }
 
   get phaseThresholds(): number[] {
@@ -188,7 +198,7 @@ export class Boss extends Entity {
         this.vx *= 0.86;
         this.vy *= 0.86;
         if (this.stateTime < 0.1) {
-          world.ctx.particles.shockwave(this.x, this.y, 420, '#ff6a3c', 0.7);
+          world.ctx.particles.shockwave(this.x, this.y, 420, this.def.palette.accent, 0.7);
           world.ctx.shake.add(0.6);
           world.ctx.audio.play('bossRoar', 1);
           world.ctx.bus.emit(GameEvents.BossPhase, { phase: this.phase });
@@ -297,16 +307,22 @@ export class Boss extends Entity {
   }
 
   private chooseAttack(world: EnemyWorld): void {
-    const pool: BossAttackKind[] = ['fanSpread', 'aimedBurst'];
-    if (this.phase >= 2) pool.push('charge', 'ringBurst', 'summon');
-    if (this.phase >= 3) pool.push('spiral', 'laserSweep', 'laserSweep');
+    const pool: BossAttackKind[] = [...(this.def.phaseAttacks[this.phase - 1] ?? [])];
+    if (pool.length === 0) pool.push('fanSpread');
 
-    // 避免连续两次相同的蓄力型大招，让节奏有起伏
-    let pick = pool[world.rng.weightedIndex(pool.map(() => 1))]!;
-    let guard = 0;
-    while (pick === this.attack && (pick === 'charge' || pick === 'laserSweep') && guard < 8) {
+    // 终极技：血量低于阈值且本场尚未触发过，强制放一次大招
+    let pick: BossAttackKind;
+    if (this.def.ultimateAt > 0 && !this.usedUltimate && this.healthPercent <= this.def.ultimateAt) {
+      this.usedUltimate = true;
+      pick = this.def.ultimateAttack;
+    } else {
+      // 避免连续两次相同的蓄力型大招，让节奏有起伏
       pick = pool[world.rng.weightedIndex(pool.map(() => 1))]!;
-      guard++;
+      let guard = 0;
+      while (pick === this.attack && (pick === 'charge' || pick === 'laserSweep') && guard < 8) {
+        pick = pool[world.rng.weightedIndex(pool.map(() => 1))]!;
+        guard++;
+      }
     }
     this.attack = pick;
     this.attackCount++;
@@ -326,7 +342,7 @@ export class Boss extends Entity {
           length: 900,
           width: this.radius * 1.7,
           progress: 0,
-          color: '255,90,70',
+          color: this.def.palette.glow,
         };
         break;
       case 'ringBurst':
@@ -339,7 +355,7 @@ export class Boss extends Entity {
           length: 0,
           width: 0,
           progress: 0,
-          color: '255,170,60',
+          color: this.def.palette.glow,
         };
         break;
       case 'summon':
@@ -352,7 +368,7 @@ export class Boss extends Entity {
           length: 0,
           width: 0,
           progress: 0,
-          color: '120,200,255',
+          color: this.def.palette.glow,
         };
         break;
       case 'laserSweep':
@@ -367,7 +383,7 @@ export class Boss extends Entity {
           length: 1500,
           width: 26,
           progress: 0,
-          color: '255,60,60',
+          color: this.def.palette.glow,
         };
         break;
       case 'spiral':
@@ -381,7 +397,7 @@ export class Boss extends Entity {
           width: 0,
           length: 0,
           progress: 0,
-          color: '255,110,220',
+          color: this.def.palette.glow,
         };
         break;
       default:
@@ -470,7 +486,7 @@ export class Boss extends Entity {
           life: 0.4,
           size: 14,
           sizeEnd: 34,
-          color: 'rgba(255,150,90,0.55)',
+          color: `rgba(${this.def.palette.glow},0.55)`,
           alpha0: 0.5,
           alpha1: 0,
           drag: 2,
@@ -514,8 +530,8 @@ export class Boss extends Entity {
               damage: 9 + this.floor * 3,
               radius: 8,
               life: 4.6,
-              color: '#ffc8f0',
-              glow: '#ff5fd0',
+              color: this.def.palette.bullet,
+              glow: this.def.palette.bulletGlow,
             });
           }
           this.spiralAngle += 0.34;
@@ -538,7 +554,7 @@ export class Boss extends Entity {
             life: 0.25,
             size: 7,
             sizeEnd: 1,
-            color: '#ff6a6a',
+            color: this.def.palette.bulletGlow,
             alpha0: 0.8,
             alpha1: 0,
             drag: 0,
@@ -579,8 +595,8 @@ export class Boss extends Entity {
         damage: dmg,
         radius: 9,
         life: 4,
-        color: '#ffd9a0',
-        glow: '#ff8a2b',
+        color: this.def.palette.bullet,
+        glow: this.def.palette.bulletGlow,
       });
     }
     world.ctx.audio.play('enemyHit', 0.45);
@@ -598,9 +614,9 @@ export class Boss extends Entity {
       damage: dmg,
       radius: 7,
       life: 3.2,
-      color: '#ffffff',
-      glow: '#ff7a45',
-      trail: '#ff4d1a',
+      color: this.def.palette.bullet,
+      glow: this.def.palette.bulletGlow,
+      trail: this.def.palette.bulletGlow,
     });
     world.ctx.audio.play('rifle', 0.4);
   }
@@ -620,18 +636,18 @@ export class Boss extends Entity {
         damage: dmg,
         radius: 9,
         life: 4,
-        color: '#ffd6a8',
-        glow: '#ff6a1f',
+        color: this.def.palette.bullet,
+        glow: this.def.palette.bulletGlow,
         spin: 4,
       });
     }
-    world.ctx.particles.shockwave(this.x, this.y, this.radius * 5.4, '#ff8a3c', 0.42);
+    world.ctx.particles.shockwave(this.x, this.y, this.radius * 5.4, this.def.palette.accent, 0.42);
     world.ctx.shake.add(0.22);
     world.ctx.audio.play('launcher', 0.55);
   }
 
   private doSummon(world: EnemyWorld): void {
-    const ids = ['grub', 'triad', 'sentinel'];
+    const ids = this.def.summonIds;
     const n = this.phase >= 3 ? 3 : 2;
     for (let i = 0; i < n; i++) {
       const ang = world.rng.next() * TAU;
