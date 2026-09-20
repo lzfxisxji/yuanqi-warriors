@@ -6,6 +6,7 @@
 import { TAU, clamp, lerp } from '../core/math';
 import { PLAYER_RADIUS, PLAYER_SPRITE_H } from '../data/config';
 import type { CharacterDef, CharacterPalette } from '../data/characters';
+import type { BossDef } from '../data/bosses';
 import type { WeaponDef } from '../data/weapons';
 import { getWeaponDef } from '../data/weapons';
 import type { UpgradeIcon } from '../data/upgrades';
@@ -1436,7 +1437,9 @@ function drawBossBitmap(
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   const rg = ctx.createRadialGradient(0, 0, r * 0.4, 0, 0, r * 2.2);
-  rg.addColorStop(0, withAlpha(boss.def.palette.glow, 0.3));
+  // ⚠️ palette.glow 是 "r,g,b" 字符串（不是十六进制），不能走 withAlpha()：
+  // withAlpha 会按 hex 解析 "120,190,255" → parseInt 在逗号处截断 → 得到近黑色的 rgba。
+  rg.addColorStop(0, `rgba(${boss.def.palette.glow},0.3)`);
   rg.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = rg;
   ctx.beginPath();
@@ -1459,12 +1462,25 @@ function drawBossBitmap(
 }
 
 /**
+ * 程序化 Boss 绘制真正读到的可视状态（就这三个字段）。
+ *
+ * 刻意用结构化类型而不是直接收 `Boss` 实体：**图鉴**只需要画一个静止的预览，
+ * 为此 new 一个 `Boss` 出来没有意义（还要跟着实体的构造逻辑走）。
+ * `Boss` 天然满足这个形状，所以场景内的调用点一行都不用改。
+ */
+export interface BossVisualState {
+  phase: number;
+  plateRotation: number;
+  facing: number;
+}
+
+/**
  * 程序化 Boss 绘制（第 1 层「熔核·渊心」本体，以及位图 Boss 在 PNG 缺失时的兜底）。
  * 原本是 drawBoss 的内联逻辑，抽到这里方便两种分支共用外层的变换 / 受击环 / 护盾 / 激光。
  */
 function drawBossProgrammatic(
   ctx: CanvasRenderingContext2D,
-  boss: Boss,
+  boss: BossVisualState,
   r: number,
   flash: boolean,
   time: number,
@@ -1594,6 +1610,68 @@ function drawBossProgrammatic(
     ctx.closePath();
     ctx.fill();
   }
+}
+
+/**
+ * 图鉴用的 Boss 立绘预览（左列表选中 → 右面板那张图）。
+ *
+ * 缩放口径刻意和游戏内**同一套**：先按「世界尺寸」算包围盒
+ * （位图 = 半径 × `BOSS_SPRITE_SCALE`，程序化 = 半径 × 2.6），
+ * 再**等比**缩放进调用方给的框里。
+ * 这样图鉴里看到的身体比例就是实战里的比例，不会出现"图鉴好看、进游戏变样"。
+ * 宽高比一律取自素材自身，绝不写死宽度。
+ */
+export function drawBossPortrait(
+  ctx: CanvasRenderingContext2D,
+  def: BossDef,
+  cx: number,
+  cy: number,
+  boxW: number,
+  boxH: number,
+  time: number,
+): void {
+  const r = def.radius;
+  const sprite = getBossSprite(def);
+  const worldH = r * BOSS_SPRITE_SCALE;
+  // 位图按素材宽高比算；程序化 Boss 的外形大致是半径 ×2.6 的圆盘，宽高同值
+  const worldW = sprite ? worldH * (sprite.img.naturalWidth / sprite.img.naturalHeight) : worldH;
+  // 高和宽都要装得下：宽体型的 Boss 只按高度缩放会横向溢出面板
+  const scale = Math.min(boxW / Math.max(1, worldW), boxH / Math.max(1, worldH));
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.translate(0, Math.sin(time * 1.6) * 3);
+  ctx.scale(scale, scale);
+
+  drawShadow(ctx, 0, r * 0.9, r * 1.05, r * 0.4, 0.34);
+
+  // 背光：和场景内一样用 Boss 自己的配色，而不是统一暖色
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const rg = ctx.createRadialGradient(0, 0, r * 0.4, 0, 0, r * 2.2);
+  // 同 drawBossBitmap：glow 是 "r,g,b" 而不是十六进制，直接拼 rgba()
+  rg.addColorStop(0, `rgba(${def.palette.glow},0.32)`);
+  rg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = rg;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 2.2, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+
+  if (sprite) {
+    ctx.drawImage(sprite.img, -worldW / 2, -worldH / 2, worldW, worldH);
+  } else {
+    // 静止预览：固定 2 阶段（不狂暴），面向正下方，甲片缓慢自转
+    drawBossProgrammatic(
+      ctx,
+      { phase: 2, plateRotation: time * 0.25, facing: Math.PI / 2 },
+      r,
+      false,
+      time,
+    );
+  }
+
+  ctx.restore();
 }
 
 // ------------------------------------------------------------------ 拾取物

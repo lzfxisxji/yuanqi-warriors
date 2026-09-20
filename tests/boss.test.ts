@@ -12,7 +12,16 @@
  *   - Boss 实体按定义正确初始化（半径 / 血量 / 接触伤害 / 名称）。
  */
 import { describe, expect, test } from 'vitest';
-import { FLOOR_BOSSES, getBossDefForFloor, validateBossFloors, type BossDef } from '../src/data/bosses';
+import {
+  BOSSES,
+  BOSS_ATTACK_LABELS,
+  FLOOR_BOSSES,
+  bossContactDamage,
+  bossMaxHp,
+  getBossDefForFloor,
+  validateBossFloors,
+  type BossDef,
+} from '../src/data/bosses';
 import { getEnemyDef, SUMMON_ENEMIES } from '../src/data/enemies';
 import { FLOOR_COUNT } from '../src/data/config';
 import { Boss, type BossAttackKind } from '../src/entities/boss';
@@ -145,5 +154,44 @@ describe('Boss 实体按定义初始化', () => {
   test('每个 BossDef 都能安全构造（不会因缺字段炸掉）', () => {
     const defs: BossDef[] = Object.values(FLOOR_BOSSES);
     for (const def of defs) expect(() => new Boss(0, 0, def)).not.toThrow();
+  });
+});
+
+/**
+ * 需求 18：图鉴新增「Boss图鉴」分页。
+ * 图鉴直接读 BOSSES / bossMaxHp 这些导出，所以这里把「图鉴看到的数据」也锁一遍 ——
+ * 光有 Boss 能跑不够，图鉴里显示错数值同样是 bug。
+ */
+describe('Boss 图鉴的数据来源（需求 18）', () => {
+  test('BOSSES 按楼层升序、覆盖全部层，且就是 FLOOR_BOSSES 里的同一批对象', () => {
+    expect(BOSSES.length).toBe(FLOOR_COUNT);
+    expect(BOSSES.map((d) => d.floor)).toEqual([1, 2, 3]);
+    for (const def of BOSSES) expect(FLOOR_BOSSES[def.floor]).toBe(def); // 同一引用，不是复制出来的第二份
+  });
+
+  test('每个 Boss 都写了图鉴简介，且不是占位/空文案', () => {
+    for (const def of BOSSES) {
+      expect(typeof def.desc).toBe('string');
+      // 太短的简介在面板里等于没写，卡一个下限
+      expect(def.desc.length).toBeGreaterThanOrEqual(12);
+      expect(def.desc).not.toContain('TODO');
+      expect(def.desc).not.toContain('？？？');
+    }
+  });
+
+  test('bossMaxHp / bossContactDamage 与 Boss 实体真实取值一致（图鉴不能显示假数值）', () => {
+    for (const def of BOSSES) {
+      const boss = new Boss(0, 0, def);
+      expect(bossMaxHp(def)).toBe(boss.maxHp);
+      expect(bossContactDamage(def)).toBe(boss.contactDamage);
+    }
+  });
+
+  test('BOSS_ATTACK_LABELS 覆盖全部攻击类型（终极技那一栏不会出现 undefined）', () => {
+    for (const a of VALID_ATTACKS) {
+      expect(typeof BOSS_ATTACK_LABELS[a]).toBe('string');
+      expect(BOSS_ATTACK_LABELS[a].length).toBeGreaterThan(0);
+    }
+    for (const def of BOSSES) expect(BOSS_ATTACK_LABELS[def.ultimateAttack]).toBeTruthy();
   });
 });

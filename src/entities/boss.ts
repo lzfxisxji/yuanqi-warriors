@@ -16,6 +16,7 @@ import { GameEvents } from '../core/eventbus';
 import { Entity } from './entity';
 import type { EnemyWorld } from './enemy';
 import type { BossDef } from '../data/bosses';
+import { bossMaxHp, bossContactDamage } from '../data/bosses';
 
 export type BossState = 'intro' | 'move' | 'windup' | 'attack' | 'recover' | 'transition' | 'dead';
 
@@ -103,7 +104,7 @@ export class Boss extends Entity {
     this.x = x;
     this.y = y;
     this.radius = def.radius;
-    this.maxHp = Math.round(def.baseHp + def.hpPerFloor * (def.floor - 1));
+    this.maxHp = bossMaxHp(def);
     this.hp = this.maxHp;
     this.knockbackResist = 1;
     this.facing = Math.PI / 2;
@@ -116,7 +117,7 @@ export class Boss extends Entity {
 
   /** 接触伤害（每秒），由场景按节拍结算。 */
   get contactDamage(): number {
-    return this.def.contactDamageBase + this.def.contactDamagePerFloor * (this.def.floor - 1);
+    return bossContactDamage(this.def);
   }
 
   get phaseThresholds(): number[] {

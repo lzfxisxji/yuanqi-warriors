@@ -22,6 +22,7 @@ import {
   createLobbyInfo,
   createMenuState,
   drawMenu,
+  type CodexTab,
   type MenuData,
   type MenuState,
 } from './ui/screens';
@@ -225,6 +226,13 @@ class App implements GameHost {
       st.codexIndex = Number(id.split(':')[1]);
       return;
     }
+    // 图鉴分页：id 形如 codex-tab-<tab>。这里直接解析而不是给每页写一条 case ——
+    // 分页由 screens.ts 的 CODEX_TABS 驱动，加一页不该还要回来改这里（漏改就是不生效）。
+    if (id.startsWith('codex-tab-')) {
+      st.codexTab = id.slice('codex-tab-'.length) as CodexTab;
+      st.codexIndex = 0;
+      return;
+    }
     if (id.startsWith('set:')) {
       this.adjustSetting(id);
       return;
@@ -309,18 +317,6 @@ class App implements GameHost {
         this.startRun(def.id);
         break;
       }
-      case 'codex-tab-weapon':
-        st.codexTab = 'weapon';
-        st.codexIndex = 0;
-        break;
-      case 'codex-tab-enemy':
-        st.codexTab = 'enemy';
-        st.codexIndex = 0;
-        break;
-      case 'codex-tab-character':
-        st.codexTab = 'character';
-        st.codexIndex = 0;
-        break;
       case 'reset':
         if (!st.confirmReset) {
           st.confirmReset = true;

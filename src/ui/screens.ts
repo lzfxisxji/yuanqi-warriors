@@ -4,6 +4,7 @@ import { MAX_PLAYERS, ROOM_CODE_LEN } from '../data/config';
 import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../data/characters';
 import { WEAPONS, getWeaponDef, type WeaponDef } from '../data/weapons';
 import { ENEMIES, getEnemyDef, type EnemyDef } from '../data/enemies';
+import { BOSSES, BOSS_ATTACK_LABELS, bossContactDamage, bossMaxHp, type BossDef } from '../data/bosses';
 import type { GameProgress, GameSettings } from '../systems/save';
 import {
   UI_COLORS,
@@ -17,7 +18,13 @@ import {
   wrapText,
   type UiButton,
 } from './widgets';
-import { drawCharacterPortrait, drawEliteBadge, drawUpgradeIcon, drawWeaponIcon } from '../render/art';
+import {
+  drawBossPortrait,
+  drawCharacterPortrait,
+  drawEliteBadge,
+  drawUpgradeIcon,
+  drawWeaponIcon,
+} from '../render/art';
 
 export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'multi';
 
@@ -86,8 +93,23 @@ const CHAR_CARDS: { x: number; y: number; w: number; h: number }[] = (() => {
   }));
 })();
 
-/** 图鉴分页：武器 / 敌人 / 角色（共用同一套「左列表 + 右详情」布局）。 */
-export type CodexTab = 'weapon' | 'enemy' | 'character';
+/** 图鉴分页：武器 / 敌人 / 角色 / Boss（共用同一套「左列表 + 右详情」布局）。 */
+export type CodexTab = 'weapon' | 'enemy' | 'character' | 'boss';
+
+/**
+ * 分页按钮的唯一出处（顺序 = 显示顺序，x 由下标算）。
+ * 以前三个分页是三条手写 push，加第四页时很容易漏掉坐标或漏掉「只有一个高亮」的互斥；
+ * 现在加一页只要往这个表里补一行。
+ */
+const CODEX_TABS: ReadonlyArray<{ id: CodexTab; label: string }> = [
+  { id: 'weapon', label: '武器图鉴' },
+  { id: 'enemy', label: '敌人图鉴' },
+  { id: 'character', label: '角色图鉴' },
+  { id: 'boss', label: 'Boss图鉴' },
+];
+/** 分页按钮的起点与步距。 */
+const CODEX_TAB_X = 92;
+const CODEX_TAB_STEP = 164;
 
 export interface MenuState {
   mode: MenuMode;
@@ -249,9 +271,17 @@ export function buildMenuButtons(state: MenuState, savedRun?: SavedRunInfo | nul
       break;
     }
     case 'codex': {
-      buttons.push({ id: 'codex-tab-weapon', label: '武器图鉴', x: 92, y: 96, w: 156, h: 44, style: state.codexTab === 'weapon' ? 'accent' : 'ghost' });
-      buttons.push({ id: 'codex-tab-enemy', label: '敌人图鉴', x: 256, y: 96, w: 156, h: 44, style: state.codexTab === 'enemy' ? 'accent' : 'ghost' });
-      buttons.push({ id: 'codex-tab-character', label: '角色图鉴', x: 420, y: 96, w: 156, h: 44, style: state.codexTab === 'character' ? 'accent' : 'ghost' });
+      CODEX_TABS.forEach((t, i) => {
+        buttons.push({
+          id: `codex-tab-${t.id}`,
+          label: t.label,
+          x: CODEX_TAB_X + i * CODEX_TAB_STEP,
+          y: 96,
+          w: 156,
+          h: 44,
+          style: state.codexTab === t.id ? 'accent' : 'ghost',
+        });
+      });
       const listLen = codexList(state.codexTab).length;
       for (let i = 0; i < listLen; i++) {
         buttons.push({
@@ -1036,11 +1066,39 @@ function drawSettingsPanel(
   }
 }
 
-/** 图鉴当前分页的条目表（武器 / 敌人 / 角色共用）。 */
+/** 图鉴当前分页的条目表（武器 / 敌人 / 角色 / Boss 共用）。 */
 function codexList(tab: CodexTab): ReadonlyArray<{ id: string; name: string; desc: string }> {
   if (tab === 'weapon') return WEAPONS;
   if (tab === 'enemy') return ENEMIES;
+  if (tab === 'boss') return BOSSES;
   return CHARACTERS;
+}
+
+/**
+ * 左列表每一行的副标题。不同分页给不同的关键信息，
+ * 放在一处集中处理 —— 之前是嵌在循环里的四层三目，加一页就很难读。
+ */
+function codexSubtitle(
+  item: { id: string; name: string; desc: string },
+  tab: CodexTab,
+  unlocked: boolean,
+): string {
+  if (tab === 'weapon') {
+    const w = item as WeaponDef;
+    return `层级 ${w.tier} · ${kindLabel(w.kind)}`;
+  }
+  if (tab === 'enemy') {
+    const e = item as EnemyDef;
+    return `${e.elite ? '精英敌人' : '普通敌人'} · 生命 ${e.hp}`;
+  }
+  if (tab === 'boss') {
+    // 副标题放「楼层 + 称号」而不是生命值：这样左列表一眼能看出第几层、是谁，
+    // 具体数值留给右侧详情，列表不用挤两个数字。
+    const b = item as BossDef;
+    return `第 ${b.floor} 层 · ${b.title}`;
+  }
+  const c = item as CharacterDef;
+  return `${c.title} · ${unlocked ? '已解锁' : '未解锁'}`;
 }
 
 /** 角色技能的一行摘要（不同技能类型给不同的关键数值）。 */
@@ -1074,6 +1132,7 @@ function drawCodex(
   const tab = state.codexTab;
   const isWeapon = tab === 'weapon';
   const isEnemy = tab === 'enemy';
+  const isBoss = tab === 'boss';
   const list = codexList(tab);
 
   // 左侧列表
@@ -1082,7 +1141,9 @@ function drawCodex(
     if (!btn) continue;
     const item = list[i]!;
     const known = isWeapon ? data.discoveredWeapons.includes(item.id) : true;
-    const unlocked = !isWeapon && !isEnemy ? isCharacterUnlocked(item as CharacterDef, data.progress) : true;
+    // ⚠️ 这里必须按 tab 精确判断：早先是 `!isWeapon && !isEnemy`，
+    // 加了 Boss 分页后 BossDef 会被当成 CharacterDef 送进 isCharacterUnlocked。
+    const unlocked = tab === 'character' ? isCharacterUnlocked(item as CharacterDef, data.progress) : true;
     const selected = state.codexIndex === i;
     ctx.save();
     // 未解锁的条目只是稍微压暗；真正的"当前选中"用金色描边 + 左侧色条区分，
@@ -1110,11 +1171,7 @@ function drawCodex(
     ctx.fillText(known ? item.name : '？？？', btn.x + 16, btn.y + 18);
     ctx.fillStyle = UI_COLORS.textDim;
     ctx.font = '500 12px "PingFang SC","Segoe UI",sans-serif';
-    const subtitle = isWeapon
-      ? `层级 ${(item as WeaponDef).tier} · ${kindLabel((item as WeaponDef).kind)}`
-      : isEnemy
-        ? `${(item as EnemyDef).elite ? '精英敌人' : '普通敌人'} · 生命 ${(item as EnemyDef).hp}`
-        : `${(item as CharacterDef).title} · ${unlocked ? '已解锁' : '未解锁'}`;
+    const subtitle = codexSubtitle(item, tab, unlocked);
     ctx.fillText(known ? subtitle : '尚未发现', btn.x + 16, btn.y + 36);
     ctx.restore();
   }
@@ -1200,6 +1257,75 @@ function drawCodex(
       ctx.fillStyle = UI_COLORS.text;
       ctx.font = '700 16px "Segoe UI",monospace';
       ctx.fillText(v, sx + col * 300, sy + row * 56 + 22);
+    }
+    ctx.restore();
+  } else if (isBoss) {
+    // Boss 图鉴：立绘 + 战斗数值 + 攻击方式
+    const def = item as BossDef;
+
+    // 称号跟在名字右边。用 measureText 定位而不是写死 x —— 否则名字一长就压字。
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.font = '600 15px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.fillText(def.title, 492 + ctx.measureText(def.name).width + 14, 204);
+    ctx.restore();
+
+    // 立绘：缩放口径与游戏内一致（见 drawBossPortrait），所以图鉴里的比例就是实战比例。
+    // 外面套一层裁剪 —— 立绘自带的放射辉光半径是 2.2×碰撞半径，不裁的话会糊到面板外面去。
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(458, 164, 728, 456);
+    ctx.clip();
+    drawBossPortrait(ctx, def, 610, 400, 250, 220, time);
+    ctx.restore();
+
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    const ultimate =
+      def.ultimateAt > 0
+        ? `${BOSS_ATTACK_LABELS[def.ultimateAttack]} @${Math.round(def.ultimateAt * 100)}%`
+        : '—';
+    const stats: Array<[string, string]> = [
+      ['生命', `${bossMaxHp(def)}`],
+      ['接触伤害', `${bossContactDamage(def)}/秒`],
+      ['阶段数', `${def.phaseAttacks.length}`],
+      ['终极技', ultimate],
+      ['召唤伙伴', def.summonIds.length > 0 ? `${def.summonIds.length} 种` : '无'],
+      ['所在层', `第 ${def.floor} 层`],
+    ];
+    const sx = 800;
+    const sy = 306;
+    for (let i = 0; i < stats.length; i++) {
+      const [k, v] = stats[i]!;
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = UI_COLORS.textDim;
+      ctx.font = '600 13px "PingFang SC","Segoe UI",sans-serif';
+      ctx.fillText(k, sx + col * 190, sy + row * 54);
+      ctx.fillStyle = UI_COLORS.text;
+      ctx.font = '700 16px "Segoe UI",monospace';
+      ctx.fillText(v, sx + col * 190, sy + row * 54 + 24);
+    }
+
+    // 攻击方式：四个技能名做成一排徽标（顺序与 skillNames 一致）
+    ctx.textAlign = 'left';
+    ctx.fillStyle = UI_COLORS.gold;
+    ctx.font = '700 15px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText('技能 / 攻击方式', 492, 522);
+    for (let i = 0; i < def.skillNames.length; i++) {
+      const bx = 492 + i * 172;
+      ctx.fillStyle = 'rgba(38,31,58,0.95)';
+      roundRect(ctx, bx, 542, 156, 36, 9);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,212,121,0.42)';
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = UI_COLORS.text;
+      ctx.font = '600 14px "PingFang SC","Segoe UI",sans-serif';
+      ctx.fillText(def.skillNames[i]!, bx + 78, 561);
     }
     ctx.restore();
   } else {

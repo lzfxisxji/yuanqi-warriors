@@ -5,6 +5,8 @@
  *   1. 主菜单右侧展示**当前已创建 / 已加入的房间**（房间号 + 模式 + 成员），
  *      面板是**半高卡片**，空状态下只保留占位提示，下半部分的说明文字不再出现。
  *   2. 图鉴增加**角色图鉴**分页（与武器/敌人共用「左列表 + 右详情」）。
+ *   3. 图鉴增加**Boss 图鉴**分页（需求 18）：每层 Boss 一条，详情给称号 /
+ *      战斗数值 / 四个技能名，且 Boss 条目不参与角色的解锁判定。
  *
  * 这里用假 ctx 记录所有 fillText 调用，断言：
  *   - 空状态：显示占位提示，旧的发现进度文案与下半部分说明彻底消失
@@ -23,6 +25,7 @@ import {
   type MenuState,
 } from '../src/ui/screens';
 import { CHARACTERS } from '../src/data/characters';
+import { BOSSES } from '../src/data/bosses';
 import type { GameProgress, GameSettings } from '../src/systems/save';
 
 // ------------------------------------------------------------------ 脚手架
@@ -245,7 +248,7 @@ describe('图鉴分页', () => {
     for (const c of CHARACTERS) expect(joined).toContain(c.name);
 
     const tabs = buildMenuButtons(state).filter((b) => b.id.startsWith('codex-tab-'));
-    expect(tabs.map((b) => b.label)).toEqual(['武器图鉴', '敌人图鉴', '角色图鉴']);
+    expect(tabs.map((b) => b.label)).toEqual(['武器图鉴', '敌人图鉴', '角色图鉴', 'Boss图鉴']);
     expect(tabs.filter((b) => b.style === 'accent')).toHaveLength(1);
     expect(tabs.find((b) => b.id === 'codex-tab-character')?.style).toBe('accent');
   });
@@ -275,6 +278,77 @@ describe('图鉴分页', () => {
     const enemyJoined = render(enemy).map((t) => t.text).join('|');
     expect(enemyJoined).not.toContain('技能 · 影袭翻滚');
     expect(enemyJoined).toContain('生命');
+  });
+
+  // ---------------------------------------------------------- 需求 18：Boss 图鉴
+  test('新增「Boss图鉴」分页：每层 Boss 都列出，且同时只有一个分页高亮', () => {
+    const state = codexState('boss');
+    const joined = render(state)
+      .map((t) => t.text)
+      .join('|');
+    for (const b of BOSSES) {
+      expect(joined).toContain(b.name);
+      expect(joined).toContain(b.title);
+    }
+
+    const tabs = buildMenuButtons(state).filter((b) => b.id.startsWith('codex-tab-'));
+    expect(tabs.map((b) => b.label)).toEqual(['武器图鉴', '敌人图鉴', '角色图鉴', 'Boss图鉴']);
+    expect(tabs.filter((b) => b.style === 'accent')).toHaveLength(1);
+    expect(tabs.find((b) => b.id === 'codex-tab-boss')?.style).toBe('accent');
+  });
+
+  test('Boss 图鉴详情：称号 / 战斗数值 / 四个技能名都在', () => {
+    const idx = BOSSES.findIndex((b) => b.id === 'doubao');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const def = BOSSES[idx]!;
+    const joined = render(codexState('boss', idx))
+      .map((t) => t.text)
+      .join('|');
+
+    expect(joined).toContain(def.name);
+    expect(joined).toContain(def.title);
+    expect(joined).toContain(def.desc);
+    for (const label of ['生命', '接触伤害', '阶段数', '终极技', '召唤伙伴', '所在层']) {
+      expect(joined).toContain(label);
+    }
+    for (const n of def.skillNames) expect(joined).toContain(n);
+  });
+
+  /**
+   * 加 Boss 分页前，左列表的 `unlocked` 是 `!isWeapon && !isEnemy` 算的 ——
+   * 直接加第四页的话，BossDef 会被当成 CharacterDef 送进 isCharacterUnlocked。
+   * 这里锁死 Boss 页绝不出现角色专属文案。
+   */
+  test('Boss 图鉴不会被当成角色：不出现解锁条件等角色专属文案', () => {
+    const joined = render(codexState('boss', 0))
+      .map((t) => t.text)
+      .join('|');
+    expect(joined).not.toContain('未解锁');
+    expect(joined).not.toContain('解锁条件');
+    expect(joined).not.toContain('尚未发现');
+    expect(joined).not.toContain('技能 · '); // 角色详情的技能标题格式
+    expect(joined).toContain('技能 / 攻击方式');
+  });
+
+  test('Boss 图鉴分页按钮：不越界、互不重叠、且不侵入右侧详情面板', () => {
+    const tabs = buildMenuButtons(codexState('boss')).filter((b) => b.id.startsWith('codex-tab-'));
+    expect(tabs).toHaveLength(4);
+    for (const t of tabs) {
+      expect(t.x).toBeGreaterThanOrEqual(0);
+      expect(t.x + t.w).toBeLessThanOrEqual(1280);
+      // 右详情面板从 y=160 起，四个分页按钮必须整个落在它上方
+      expect(t.y + t.h).toBeLessThanOrEqual(160);
+    }
+    for (let i = 1; i < tabs.length; i++) {
+      expect(tabs[i]!.x).toBeGreaterThanOrEqual(tabs[i - 1]!.x + tabs[i - 1]!.w);
+    }
+  });
+
+  test('切到 Boss 分页：左列表条目数等于 Boss 数（不是角色数）', () => {
+    const bossItems = buildMenuButtons(codexState('boss')).filter((b) => /^codex:\d+$/.test(b.id));
+    expect(bossItems).toHaveLength(BOSSES.length);
+    const charItems = buildMenuButtons(codexState('character')).filter((b) => /^codex:\d+$/.test(b.id));
+    expect(charItems).toHaveLength(CHARACTERS.length);
   });
 
   test('新增角色噜噜的图鉴详情：初始解锁 + 专属技能', () => {

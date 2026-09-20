@@ -34,6 +34,8 @@ export interface BossDef {
   id: string;
   name: string;
   title: string;
+  /** 图鉴简介（与 ENEMIES / WEAPONS / CHARACTERS 的 desc 同口径）。 */
+  desc: string;
   /** 位图立绘 slug（public/bosses/<slug>.png）；无则走程序化绘制（第 1 层） */
   sprite?: string;
   /** 所在楼层（1 起） */
@@ -64,6 +66,7 @@ const YUANXIN: BossDef = {
   id: 'yuanxin',
   name: '熔核·渊心',
   title: '深渊构筑体',
+  desc: '地牢最深处自行拼合出的装甲造物，八枚甲片环绕着不熄的熔核，越受创越狂暴。',
   floor: 1,
   radius: 52,
   baseHp: 2100,
@@ -87,6 +90,7 @@ const DOUBAO: BossDef = {
   id: 'doubao',
   name: '豆包',
   title: 'AI 伙伴 · 团宠',
+  desc: '本该是并肩作战的伙伴，被地牢的能量泡坏了脾气；打急了还会把噜噜它们喊来帮忙。',
   sprite: 'doubao',
   floor: 2,
   radius: 52,
@@ -111,6 +115,7 @@ const DEEPSEEK: BossDef = {
   id: 'deepseek',
   name: 'DeepSeek',
   title: '深度之眼',
+  desc: '盘踞在远征尽头的巨大造物，据说什么都能算到；它把每一步走位都当成待解的题。',
   sprite: 'deepseek',
   floor: 3,
   radius: 52,
@@ -137,18 +142,62 @@ export const FLOOR_BOSSES: Record<number, BossDef> = {
   3: DEEPSEEK,
 };
 
+/**
+ * 按楼层升序排列的全部 Boss —— **图鉴左列表的唯一出处**。
+ * 故意从 `FLOOR_BOSSES` 派生而不是手写第二份清单：
+ * 以后加一层只要往 FLOOR_BOSSES 里补一条，图鉴自动多一行，不会再出现"漏登记"。
+ */
+export const BOSSES: readonly BossDef[] = Object.keys(FLOOR_BOSSES)
+  .map(Number)
+  .sort((a, b) => a - b)
+  .map((f) => FLOOR_BOSSES[f]!);
+
+/** 攻击类型的图鉴中文名（终极技那一栏要用）。 */
+export const BOSS_ATTACK_LABELS: Record<BossAttackKind, string> = {
+  fanSpread: '扇形弹幕',
+  aimedBurst: '定向连射',
+  charge: '蓄力冲撞',
+  ringBurst: '环状爆发',
+  summon: '召唤伙伴',
+  spiral: '螺旋弹幕',
+  laserSweep: '扫射激光',
+};
+
 /** 取指定楼层的 Boss 定义；越界时回落到最后一层的 Boss。 */
 export function getBossDefForFloor(floor: number): BossDef {
   return FLOOR_BOSSES[floor] ?? FLOOR_BOSSES[FLOOR_COUNT]!;
 }
 
-/** 校验：FLOOR_BOSSES 必须覆盖 1..FLOOR_COUNT 每一层，且每层 id 唯一。 */
+/**
+ * Boss 在该层的实际血量。
+ * **唯一出处**：实体（entities/boss.ts）和图鉴都从这里取，
+ * 免得图鉴显示 2000、实战却是 2850 这种两处算法漂移。
+ */
+export function bossMaxHp(def: BossDef): number {
+  return Math.round(def.baseHp + def.hpPerFloor * (def.floor - 1));
+}
+
+/** Boss 在该层的实际接触伤害（每秒）。唯一出处，理由同 bossMaxHp。 */
+export function bossContactDamage(def: BossDef): number {
+  return def.contactDamageBase + def.contactDamagePerFloor * (def.floor - 1);
+}
+
+/** 校验：FLOOR_BOSSES 必须覆盖 1..FLOOR_COUNT 每一层，且每层 id 唯一、图鉴字段齐备。 */
 export function validateBossFloors(): void {
   const ids = new Set<string>();
   for (let f = 1; f <= FLOOR_COUNT; f++) {
     const def = FLOOR_BOSSES[f];
     if (!def) throw new Error(`缺少第 ${f} 层的 Boss 定义`);
     if (ids.has(def.id)) throw new Error(`Boss id 重复：${def.id}`);
+    if (def.floor !== f) throw new Error(`Boss ${def.id} 的 floor=${def.floor} 与键 ${f} 不一致`);
+    // 图鉴要直接展示这两项，空掉会画出空白行
+    if (!def.desc) throw new Error(`Boss ${def.id} 缺少图鉴简介 desc`);
+    if (def.skillNames.length !== 4 || def.skillNames.some((n) => !n)) {
+      throw new Error(`Boss ${def.id} 的 skillNames 必须是 4 个非空技能名`);
+    }
     ids.add(def.id);
+  }
+  if (BOSSES.length !== FLOOR_COUNT) {
+    throw new Error(`BOSSES 条目数 ${BOSSES.length} 与 FLOOR_COUNT ${FLOOR_COUNT} 不一致`);
   }
 }
