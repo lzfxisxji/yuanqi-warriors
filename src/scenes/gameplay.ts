@@ -1548,6 +1548,7 @@ export class GameplayScene {
       score: this.run.score,
       settings: this.host.save.data.settings,
       characterName: this.run.character.name,
+      pk: this.netMode === 'pk',
     };
   }
 
@@ -2465,6 +2466,7 @@ export class GameplayScene {
       pickups,
       gold: this.run.gold,
       phase: this.ended ? (this.overlay.mode === 'victory' ? 'victory' : 'dead') : 'play',
+      winnerId: this.winnerId,
     };
   }
 
@@ -2636,8 +2638,10 @@ export class GameplayScene {
       return pk;
     });
 
-    // 兜底：gameover 消息若丢失，按快照结算
-    if (s.phase !== 'play' && !this.ended) this.onNetGameover(s.phase === 'victory', null);
+    // 兜底：gameover 消息若丢失，按快照结算（带上快照里的胜者，PK 才能判对）
+    if (s.phase !== 'play' && !this.ended) {
+      this.onNetGameover(s.phase === 'victory', s.winnerId ?? null);
+    }
   }
 
   private applyPlayerNet(p: Player, ps: PlayerNetState, dtRaw: number): void {
@@ -2695,13 +2699,28 @@ export class GameplayScene {
   private onNetGameover(won: boolean, winnerId: string | null): void {
     if (this.ended) return;
     this.winnerId = winnerId;
-    if (this.netMode === 'pk' && winnerId && winnerId !== this.localPeerId) {
-      const wp = this.netPlayersById.get(winnerId);
-      if (wp) this.cause = `${wp.netName ?? '对手'} 成为最后的幸存者`;
-    } else if (this.netMode === 'pk' && winnerId === this.localPeerId) {
-      this.cause = '你成为了最后的幸存者';
+    // PK 是自由混战，「won」只是**房主视角**的结果，客户端绝不能照单全收：
+    //   房主赢 → 广播 won=true，客户端若采信就会陪着一起显示"胜利"；
+    //   客户端赢 → 房主发的是 won=false，客户端就会错误地显示"失败"（本 bug）。
+    // 唯一可靠的判据是「最后的幸存者是不是我」。
+    let localWon = won;
+    if (this.netMode === 'pk') {
+      localWon = !!winnerId && winnerId === this.localPeerId;
+      if (localWon) {
+        this.cause = '你成为了最后的幸存者';
+      } else if (winnerId) {
+        // 昵称优先取快照缓存；还没收到过快照时退回开局就有的 peers 名单，
+        // 否则结算界面会显示含糊的"对手"。
+        const name =
+          this.netPlayersById.get(winnerId)?.netName ??
+          this.peers.find((p) => p.id === winnerId)?.name ??
+          '对手';
+        this.cause = `${name} 成为最后的幸存者`;
+      } else {
+        this.cause = '全员阵亡';
+      }
     }
-    this.finishRun(won);
+    this.finishRun(localWon);
   }
 
   private checkNetEnd(): void {

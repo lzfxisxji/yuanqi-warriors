@@ -98,6 +98,8 @@ export interface OverlayContext {
   score: number;
   settings: GameSettings;
   characterName: string;
+  /** 本局是否 PK 自由混战（决定结算界面的抬头文案）。 */
+  pk?: boolean;
 }
 
 export function createOverlayState(): OverlayState {
@@ -841,11 +843,24 @@ function drawSummary(
   oc: OverlayContext,
 ): void {
   const won = overlay.mode === 'victory';
+  const pk = oc.pk === true;
   drawPanel(ctx, 340, 96, 600, 540, { radius: 18 });
-  drawHeading(ctx, won ? '通关成功' : '远征失败', 640, 148, 40, 'center', won ? '#7ef2c0' : '#ff8a7a');
   drawHeading(
     ctx,
-    won ? '你击碎了深渊之心，地牢暂时安静下来。' : `被 ${overlay.death?.cause ?? '未知力量'} 击倒在第 ${oc.floor} 层`,
+    pk ? (won ? 'PK 胜利' : 'PK 失败') : won ? '通关成功' : '远征失败',
+    640,
+    148,
+    40,
+    'center',
+    won ? '#7ef2c0' : '#ff8a7a',
+  );
+  drawHeading(
+    ctx,
+    pk
+      ? (overlay.death?.cause ?? (won ? '你成为了最后的幸存者' : '倒在了对手手里'))
+      : won
+        ? '你击碎了深渊之心，地牢暂时安静下来。'
+        : `被 ${overlay.death?.cause ?? '未知力量'} 击倒在第 ${oc.floor} 层`,
     640,
     182,
     13,

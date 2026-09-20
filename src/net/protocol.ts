@@ -136,6 +136,12 @@ export interface Snapshot {
   pickups: PickupNetState[];
   gold: number;
   phase: GamePhase;
+  /**
+   * 对局结束时的胜者 peerId（未结束 / 平局为 null）。
+   * PK 是自由混战，「谁赢了」只有房主知道，客户端必须靠这个字段
+   * 才能在 gameover 消息丢失时也判对自己的胜负（见 onNetGameover）。
+   */
+  winnerId?: string | null;
 }
 
 // ---------------------------------------------------------------- 消息
