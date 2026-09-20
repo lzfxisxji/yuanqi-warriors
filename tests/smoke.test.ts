@@ -500,7 +500,7 @@ describe('游戏主循环冒烟测试', () => {
 
   test('最终层击破 Boss：同样刷出传送门，按 E 直接通关结算（endRun won = true）', () => {
     const { host, results } = makeHost();
-    const scene = new GameplayScene(host, 'bulwark', 8642);
+    const scene = new GameplayScene(host, 'milkdragon', 8642);
     // 直接置为最终层：只验证「最终层击破 → 传送门 → 按 E 通关」这段分支
     scene.state.floor = FLOOR_COUNT;
 
@@ -524,7 +524,7 @@ describe('游戏主循环冒烟测试', () => {
     expect(results.length).toBe(1);
     const last = results[0]!;
     expect(last.won).toBe(true);
-    expect(last.characterId).toBe('bulwark');
+    expect(last.characterId).toBe('milkdragon');
     expect(last.floor).toBe(FLOOR_COUNT);
     expect(last.score).toBeGreaterThan(0);
     scene.dispose();

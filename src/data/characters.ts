@@ -1,7 +1,15 @@
-/** 三名原创可选角色。数值、技能、配色全部原创，且在生命/速度/技能上差异明显。 */
+/** 两名原创角色（狼影 / 蜂针）+ 四名位图立绘角色，共 6 名可选。数值、技能、配色全部原创。 */
 
 export type SkillKind = 'dash' | 'overdrive' | 'barrier';
 
+/**
+ * 解锁规则。
+ *
+ * 注意：`wins`（通关 N 次解锁）目前**没有角色在用** —— 原「磐垒」取消后这条就空了出来。
+ * 规则本身、`isCharacterUnlocked` 与 `unlockHint` 的分支都保留着，
+ * 以后要加"通关才解锁"的角色，直接挂 `{ kind: 'wins', value: n }` 即可
+ * （该分支由 `tests/data.test.ts` 的用例守着，不会因没人用而腐化）。
+ */
 export type UnlockRule =
   | { kind: 'default' }
   | { kind: 'bestFloor'; value: number }
@@ -129,40 +137,6 @@ export const CHARACTERS: CharacterDef[] = [
       { label: '生命', value: 0.24 },
       { label: '速度', value: 0.9 },
       { label: '技能', value: 0.75 },
-    ],
-  },
-  {
-    id: 'bulwark',
-    name: '磐垒',
-    title: '重装型 · 攻坚',
-    desc: '血厚但迟缓，能展开能量壁垒吸收成吨伤害，正面硬吃弹幕。',
-    maxHp: 148,
-    startShield: 30,
-    maxShield: 120,
-    speed: 196,
-    baseDodge: 0,
-    startWeapon: 'shotgun',
-    skill: {
-      kind: 'barrier',
-      name: '壁垒展开',
-      desc: '展开 95 点能量护盾，持续 7 秒，期间护盾先行承伤。',
-      cooldown: 12,
-      duration: 7,
-      shieldAmount: 95,
-    },
-    palette: {
-      primary: '#8f93ad',
-      secondary: '#565a74',
-      accent: '#7ef2c0',
-      skin: '#d8b08a',
-      cape: '#3a3a4a',
-      glow: '#9fe8ff',
-    },
-    unlock: { kind: 'wins', value: 1 },
-    bars: [
-      { label: '生命', value: 0.95 },
-      { label: '速度', value: 0.22 },
-      { label: '技能', value: 0.8 },
     ],
   },
   {

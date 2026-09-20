@@ -53,17 +53,20 @@ const BOSS_OUT_H = 360;
 /**
  * 每张设定图只取**正面立绘**（用户要求：三视图里只要参考图，不需要侧面/背面）。
  *
- * 两张原图版式完全不同，自动切格不可靠，所以写死矩形边界 —— 这几个数字是用
- * 内容块探测（见 `inkRuns`）逐张量出来的，改动素材时必须重新量：
- * - lulu（1748×900）：正面格 x 568-890，人物 y 270-714；
- *   下方 y 743-791 是「正面」文字标板，必须排除。
- * - fatkangaroo（1747×900）：正面格 x 992-1325，人物 y 252-719；
- *   同样排除 y 745-791 的标板。
- * 矩形内仍可能有标板/邻格残留，所以裁完还要做一次"最大连通块"筛选（见 `keepLargestBlob`）。
+ * 各张原图版式不同（格宽不等、有无分隔线也不一样），自动切格不可靠，
+ * 所以写死矩形边界 —— 这几个数字全部是用 `tools/diag-box.mjs` 逐列/逐行
+ * 数墨迹量出来的。**改动素材或调整 box 后必须重新量**，量完再跑
+ * `tools/diag-edge.mjs` 复核输出图没有被裁切（见 milkdragon 那条血泪注释）。
+ *
+ * box 的两条铁律：
+ *   1. y1 必须停在「正面」文字标板之前，否则标板会被抠进来；
+ *   2. x0/x1 要么卡进"零墨迹走廊"，要么至少保证与邻格/大立绘**不连通** ——
+ *      keepSeededBlob 是从躯干种子出发的洪泛，不连通的墨迹会被自动丢弃。
+ * 矩形内仍可能有标板/邻格残留，交给 keepSeededBlob 的连通性筛选兜住。
  */
 const LAYOUTS = {
   // 噜噜：**不是等宽四格**，最左还有一个比格子高的大立绘。
-  // 用"离背景色明显不同"的阈值实测（见 tools/diag-bounds.mjs）：
+  // 用"离背景色明显不同"的阈值实测（见 tools/diag-box.mjs）：
   //   正面格 x567-890，角色 y270-713；下方 y744-791 是「正面」文字标板。
   // 所以 box 的 y1 必须停在 720（标板之前），否则会把标板一起抠进来。
   lulu: { slug: 'lulu', box: { x0: 560, x1: 898, y0: 255, y1: 720 }, seed: { x: 728, y: 520 } },
@@ -71,15 +74,21 @@ const LAYOUTS = {
   // y=520 处实测四格分段：160-435(挥手大图) | 603-869(正面) | 1012-1211(侧面) | 1404-1667(背面)。
   // 正面角色体实测 y250-712（y<246 是顶部标题文字，不是角色），标板在 y746-791。
   fatkangaroo: { slug: 'fatkangaroo', box: { x0: 596, x1: 876, y0: 244, y1: 718 }, seed: { x: 750, y: 520 } },
-  // 奶龙（1747×900）：版式和前两张同源，但**格与格之间贴得更紧、没有分隔线**，
-  // 侧面格的身体会一直延伸到 x≈500，和正面格在 x 上重叠 —— 所以 box 的 x0 必须
-  // 卡在侧面身体与正面身体之间的空隙（实测 x≈556..602 是干净的背景走廊）。
-  // 实测（tools/diag-milkdragon.mjs / diag-milk2.mjs / diag-milk3.mjs）：
-  //   正面角色体 x604-881、y253-687；标板「正面」在 y716-760（中心色 rgb(173,137,106)）。
+  // 奶龙（1747×900）：版式和前两张同源，但**格与格之间贴得更紧**，
+  // 而且最左那尊「挥爪大立绘」伸出的手臂会一直探到正面格边上 ——
+  // 它和正面角色之间只剩一条 3px 宽的空隙，box 的 x0 必须卡进这条缝里。
+  //
+  // ⚠️ 这里踩过坑：x0 曾经取 610（当时只想"把大立绘的爪子挡在 box 外"），
+  //    结果把**正面角色自己的左臂**一起切掉了 —— 输出 64% 的行贴着左边缘，
+  //    游戏里表现为奶龙左半边没了。用 tools/diag-box.mjs 逐列复测：
+  //      大立绘爪尖止于 x557；x558..560 整列零墨迹（干净走廊）；正面角色从 x561 起。
+  //    所以 x0=558 既隔断了邻格、又不切角色。改完务必跑 tools/diag-edge.mjs 复核。
+  //
+  // 其余实测：正面角色体右沿 x881、头顶 y253；标板「正面」在 y716-760；
   //   顶部左上「奶龙」大标题在 x205-511 / y28-200，不在 box 内，天然排除。
-  milkdragon: { slug: 'milkdragon', box: { x0: 610, x1: 888, y0: 250, y1: 700 }, seed: { x: 730, y: 520 } },
+  milkdragon: { slug: 'milkdragon', box: { x0: 558, x1: 888, y0: 250, y1: 700 }, seed: { x: 730, y: 520 } },
   // 牛来（1748×900）：四格 + 最左超出格子的抱臂大立绘 + 左上「牛来」大标题。
-  // 实测（tools/diag-niulai.mjs / diag-niu2.mjs）：
+  // 实测（见 tools/diag-box.mjs）：
   //   正面角色体 x560-904、y240-714（最宽处 y550-570 的 x560-904 是它张开的双臂）；
   //   侧面格身体从 x≈1030 起，而正面格右侧到 x≈905 就干净了 ——
   //   所以 x1 取 915 足够宽又不会碰到侧面格。
@@ -368,6 +377,58 @@ function resize(src, outW, outH) {
 }
 
 /**
+ * 输出立绘的「边缘平切」自检。
+ *
+ * 抠图最容易犯、也最难发现的错，是 **box 裁得比角色本体窄** ——
+ * 表现就是角色被切掉一块。奶龙就踩过：box.x0 取 610，而正面格左爪从 x558 就开始，
+ * 结果整条左臂没了（输出 43.8% 的行在左边缘平切）。
+ *
+ * 这类 bug 是**像素级**的，坐标断言看不见，只能量生成结果本身：
+ * 逐行求 alpha 墨迹的最左/最右，找"最长连续贴边行"。
+ *
+ * 立绘正常时"最宽处"（爪尖 / 耳朵 / 张开的双臂）确实会贴边，但只是很短的一段：
+ * 实测 6 张立绘（4 角色 + 2 Boss）最长 32 行，占比都 ≤ 9.7%。
+ * 而奶龙那个坏样本是 140 行 / 43.8%。阈值取 22%，正常样本留一倍余量。
+ */
+const EDGE_CLIP_RATIO = 0.22;
+function edgeClipReport(png) {
+  const { width, height, data } = png;
+  const aAt = (x, y) => data[(y * width + x) * 4 + 3];
+  let leftRun = 0;
+  let rightRun = 0;
+  let leftMax = 0;
+  let rightMax = 0;
+  let solidRows = 0;
+  for (let y = 0; y < height; y++) {
+    let minX = -1;
+    let maxX = -1;
+    for (let x = 0; x < width; x++) {
+      if (aAt(x, y) > 60) {
+        if (minX < 0) minX = x;
+        maxX = x;
+      }
+    }
+    if (minX < 0) {
+      leftRun = 0;
+      rightRun = 0;
+      continue;
+    }
+    solidRows++;
+    leftRun = minX <= 1 ? leftRun + 1 : 0;
+    rightRun = maxX >= width - 2 ? rightRun + 1 : 0;
+    if (leftRun > leftMax) leftMax = leftRun;
+    if (rightRun > rightMax) rightMax = rightRun;
+  }
+  const clipped = [];
+  if (solidRows > 0 && leftMax / solidRows > EDGE_CLIP_RATIO) clipped.push(`左侧 ${leftMax} 行连续贴边`);
+  if (solidRows > 0 && rightMax / solidRows > EDGE_CLIP_RATIO) clipped.push(`右侧 ${rightMax} 行连续贴边`);
+  return { leftMax, rightMax, solidRows, clipped };
+}
+
+/** 自检收集到的告警；main() 末尾据此决定退出码。 */
+const WARNINGS = [];
+
+/**
  * 处理一张设定图：去背景 → 只留正面格内最大的连通块 → 统一高度输出。
  * 侧面/背面按用户要求丢弃。
  */
@@ -394,6 +455,20 @@ function process(srcPath, layout, displayName, outDir, outH) {
   const dst = join(outDir, `${layout.slug}.png`);
   writeFileSync(dst, PNG.sync.write(scaled));
   log.push(`   -> ${outDir.split(/[\\/]/).pop()}/${layout.slug}.png ${outW}x${outH} ${statSync(dst).size}B`);
+
+  // 边缘平切自检（见 edgeClipReport 注释）—— 量的是**写出去的成品**，
+  // 所以缩放/取整造成的偏移也一并被覆盖。
+  const clip = edgeClipReport(scaled);
+  const pct = (n) => `${((n / Math.max(1, clip.solidRows)) * 100).toFixed(1)}%`;
+  if (clip.clipped.length) {
+    WARNINGS.push(`${layout.slug}: ${clip.clipped.join(' / ')}`);
+    log.push(
+      `   ⚠️ 边缘自检未通过：${clip.clipped.join(' / ')}（阈值 ${(EDGE_CLIP_RATIO * 100).toFixed(0)}%）`,
+      `      多半是 box 裁窄了。用 tools/diag-box.mjs 重新量 box 后重跑，再用 tools/diag-edge.mjs 复核。`,
+    );
+  } else {
+    log.push(`   边缘自检 ok（最长连续贴边 左 ${pct(clip.leftMax)} / 右 ${pct(clip.rightMax)}）`);
+  }
   return log;
 }
 
@@ -413,20 +488,37 @@ function main() {
     lines.push(...process(join(SRC_DIR, f), LAYOUTS[info.key], info.display, OUT_DIR, OUT_H));
   }
 
-  // Boss 立绘
+  // Boss 立绘。注意 role/ 目录里还有「XX-技能.png」等参考图 —— 它们不需要处理，
+  // 所以这里只对**未在上面的角色循环里消费过**的文件报"跳过"，避免噪声与误导。
+  const charSrcs = new Set(Object.keys(SLUGS));
   const bossFiles = readdirSync(SRC_DIR)
     .filter((f) => f.toLowerCase().endsWith('.png'))
     .filter((f) => only.length === 0 || only.includes(SLUGS_BOSS[f]?.key ?? ''));
   for (const f of bossFiles) {
+    if (charSrcs.has(f)) continue;
     const info = SLUGS_BOSS[f];
     if (!info) {
-      lines.push(`${f}: 未登记版式，跳过（如需处理请补 LAYOUTS_BOSS/SLUGS_BOSS）`);
+      lines.push(`${f}: 未登记版式，跳过（要接入请补 LAYOUTS+SLUGS 或 LAYOUTS_BOSS+SLUGS_BOSS）`);
       continue;
     }
     lines.push(...process(join(SRC_DIR, f), LAYOUTS_BOSS[info.key], info.display, BOSS_OUT_DIR, BOSS_OUT_H));
   }
 
   writeFileSync(join(ROOT, '.cutout-log.txt'), lines.join('\n'), 'utf8');
+
+  const okCount = lines.filter((l) => l.includes('边缘自检 ok')).length;
+  if (WARNINGS.length) {
+    console.error(
+      `\n❌ 边缘自检未通过（${WARNINGS.length} 张）：\n  ${WARNINGS.join('\n  ')}\n` +
+        `   立绘很可能被 box 裁切了。请用 tools/diag-box.mjs 重新量 box，改完重跑本脚本，\n` +
+        `   再用 tools/diag-edge.mjs 复核。详细日志见 .cutout-log.txt`,
+    );
+    // ⚠️ 必须走 globalThis.process —— 本文件顶层有个 `function process(...)`，
+    // 直接写 `process.exitCode` 是往那个函数对象上挂属性，退出码根本传不出去。
+    globalThis.process.exitCode = 1;
+  } else {
+    console.log(`✅ 抠图完成，边缘自检全部通过（${okCount} 张）。详细日志见 .cutout-log.txt`);
+  }
 }
 
 main();

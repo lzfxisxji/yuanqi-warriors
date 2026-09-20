@@ -261,8 +261,8 @@ describe('图鉴分页', () => {
     return state;
   }
 
-  test('新增「角色图鉴」分页：七个角色都列出，且同时只有一个分页高亮', () => {
-    expect(CHARACTERS).toHaveLength(7);
+  test('新增「角色图鉴」分页：六个角色都列出，且同时只有一个分页高亮', () => {
+    expect(CHARACTERS).toHaveLength(6);
     const state = codexState('character');
     const joined = render(state)
       .map((t) => t.text)
@@ -439,7 +439,7 @@ describe('图鉴分页', () => {
     expect(joined).not.toContain('解锁条件');
   });
 
-  test('角色选择：7 张卡不越界，且都留在画面内', () => {
+  test('角色选择：6 张卡不越界，且都留在画面内', () => {
     const state = createMenuState();
     state.mode = 'charselect';
     const cards = buildMenuButtons(state).filter((b) => b.id.startsWith('char:'));
@@ -453,7 +453,7 @@ describe('图鉴分页', () => {
       expect(cards[i]!.x).toBeGreaterThanOrEqual(cards[i - 1]!.x + cards[i - 1]!.w);
     }
     // 卡片被压窄后，卡内还有能力条/武器图标要放 —— 留出可读宽度
-    // （7 人时实测 cardW=164，所以下限卡在 160）
+    // （6 人时实测 cardW=194，所以下限卡在 160 留足余量）
     for (const c of cards) expect(c.w).toBeGreaterThanOrEqual(160);
     // 所有卡等高（高度是"游戏内角色大小一致"之外的 UI 约束，防止改漏一个）
     const heights = new Set(cards.map((c) => c.h));
@@ -461,7 +461,7 @@ describe('图鉴分页', () => {
   });
 
   /**
-   * 7 个角色时卡宽会被压到 164px。这里断言**卡内文字不会被画到卡片外**
+   * 6 个角色时卡宽 194px。这里断言**卡内文字不会被画到卡片外**
    * （记录型 ctx 拿得到每个 fillText 的 x 坐标），
    * 因为"卡片按钮不越界"并不代表"卡里画的东西也不越界"。
    *

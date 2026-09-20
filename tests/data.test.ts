@@ -11,7 +11,7 @@ import {
 } from '../src/data/enemies';
 import { UPGRADES, addUpgrade, computeMods, defaultMods, rollUpgradeChoices, stacksOf } from '../src/data/upgrades';
 import { buildCombatWaves, buildEliteWaves, waveEnemyCount } from '../src/data/encounters';
-import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint } from '../src/data/characters';
+import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../src/data/characters';
 import { EVENTS } from '../src/data/events';
 import { RNG } from '../src/core/math';
 
@@ -263,9 +263,9 @@ describe('遭遇战编排', () => {
 });
 
 describe('角色 / 事件数据', () => {
-  test('提供 7 名差异明显的角色', () => {
-    expect(CHARACTERS.length).toBe(7);
-    // 三种技能类型都要有人用（影袭翻滚 / 超载引擎 / 壁垒展开）。
+  test('提供 6 名差异明显的角色', () => {
+    expect(CHARACTERS.length).toBe(6);
+    // 三种技能类型都要有人用（影袭翻滚 / 超载引擎 / 奶泡护体 等）。
     const skills = new Set(CHARACTERS.map((c) => c.skill.kind));
     expect(skills.size).toBe(3);
     const hps = CHARACTERS.map((c) => c.maxHp);
@@ -307,12 +307,21 @@ describe('角色 / 事件数据', () => {
   test('解锁规则按进度正确判定', () => {
     const wolf = getCharacter('wolfshade');
     const sting = getCharacter('sting');
-    const bulwark = getCharacter('bulwark');
     expect(isCharacterUnlocked(wolf, { bestFloor: 1, wins: 0 })).toBe(true);
     expect(isCharacterUnlocked(sting, { bestFloor: 1, wins: 0 })).toBe(false);
     expect(isCharacterUnlocked(sting, { bestFloor: 2, wins: 0 })).toBe(true);
-    expect(isCharacterUnlocked(bulwark, { bestFloor: 9, wins: 0 })).toBe(false);
-    expect(isCharacterUnlocked(bulwark, { bestFloor: 9, wins: 1 })).toBe(true);
+
+    // 「通关 N 次解锁」（wins）目前**没有角色在用** —— 原「磐垒」取消后这条就空了出来。
+    // 规则与分支都保留（见 characters.ts 的 UnlockRule 注释），这里用一份合成定义
+    // 守住该分支，免得它因为没人用而悄悄腐化。
+    const byWins: CharacterDef = {
+      ...wolf,
+      id: 'synthetic-wins',
+      unlock: { kind: 'wins', value: 3 },
+    };
+    expect(isCharacterUnlocked(byWins, { bestFloor: 9, wins: 2 })).toBe(false);
+    expect(isCharacterUnlocked(byWins, { bestFloor: 9, wins: 3 })).toBe(true);
+    expect(unlockHint(byWins)).toBe('解锁条件：通关 3 次');
   });
 
   test('未知角色 id 回退到首个角色', () => {

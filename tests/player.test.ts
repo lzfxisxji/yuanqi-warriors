@@ -6,7 +6,8 @@ import { defaultHitOptions } from '../src/systems/combat';
 
 const wolf = () => getCharacter('wolfshade');
 const sting = () => getCharacter('sting');
-const bulwark = () => getCharacter('bulwark');
+/** 高血量 / 低机动 / 带护盾技能的「重装位」参考角色。 */
+const milk = () => getCharacter('milkdragon');
 
 const hit = (over: Partial<ReturnType<typeof defaultHitOptions>> = {}) => defaultHitOptions(over);
 
@@ -35,9 +36,10 @@ describe('玩家：基础状态', () => {
   });
 
   test('三名角色在速度与血量上确实不同', () => {
+    // 重装位参考角色：原「磐垒」已取消，改用奶龙（同为高血 / 低速 / 护盾型）
     const a = new Player(wolf());
     const b = new Player(sting());
-    const c = new Player(bulwark());
+    const c = new Player(milk());
     expect(b.speed).toBeGreaterThan(a.speed);
     expect(a.speed).toBeGreaterThan(c.speed);
     expect(c.maxHp).toBeGreaterThan(a.maxHp);
@@ -61,7 +63,7 @@ describe('玩家：伤害与防御', () => {
   });
 
   test('壁垒（技能护盾）优先于普通护盾', () => {
-    const p = noDodge(new Player(bulwark()));
+    const p = noDodge(new Player(milk()));
     p.useSkill();
     expect(p.barrier).toBeGreaterThan(0);
     const barrier = p.barrier;
@@ -174,7 +176,7 @@ describe('玩家：脱战回复', () => {
   });
 
   test('再次受伤会立刻打断回血', () => {
-    const p = noDodge(new Player(bulwark()));
+    const p = noDodge(new Player(milk()));
     p.mods = { ...p.mods, healthRegen: 12 };
     p.shield = 0;
     p.hp = p.maxHp - 40;
@@ -191,7 +193,7 @@ describe('玩家：脱战回复', () => {
   });
 
   test('护盾回复共用同一套脱战判定（2 秒）', () => {
-    const p = noDodge(new Player(bulwark()));
+    const p = noDodge(new Player(milk()));
     p.mods = { ...p.mods, shieldRegen: 6 };
     p.maxShield = 100;
     p.shield = 20;
@@ -299,10 +301,10 @@ describe('玩家：技能冷却', () => {
   });
 
   test('冷却核心强化会缩短技能冷却', () => {
-    const p = new Player(bulwark());
+    const p = new Player(milk());
     p.refreshFromMods({ ...defaultMods(), skillCdMul: 0.5 });
     p.useSkill();
-    expect(p.skillCooldown).toBeCloseTo(bulwark().skill.cooldown * 0.5, 6);
+    expect(p.skillCooldown).toBeCloseTo(milk().skill.cooldown * 0.5, 6);
   });
 
   test('技能进度条百分比在 0..1 之间', () => {

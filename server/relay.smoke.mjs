@@ -115,7 +115,7 @@ try {
   // 8) 加入已开始房间应报错
   const c = client();
   await c.open();
-  c.send({ t: 'join', code, name: 'C', characterId: 'bulwark', color: '#7ef2c0' });
+  c.send({ t: 'join', code, name: 'C', characterId: 'milkdragon', color: '#7ef2c0' });
   const err = await c.next();
   ok('已开始的房间拒绝加入', err.t === 'error');
   c.ws.close();
