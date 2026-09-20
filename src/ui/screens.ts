@@ -15,6 +15,7 @@ import {
   drawKeyHint,
   drawPanel,
   drawSpinner,
+  formatTime,
   wrapText,
   type UiButton,
 } from './widgets';
@@ -26,7 +27,7 @@ import {
   drawWeaponIcon,
 } from '../render/art';
 
-export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'multi';
+export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi';
 
 /** 联机大厅阶段：idle 选模式/建房/加入；room 已在房间内。 */
 export type LobbyPhase = 'idle' | 'room';
@@ -111,13 +112,23 @@ const CODEX_TABS: ReadonlyArray<{ id: CodexTab; label: string }> = [
 const CODEX_TAB_X = 92;
 const CODEX_TAB_STEP = 164;
 
+/**
+ * 危险操作的二次确认。设置后界面进入**模态**：底下所有按钮被标成 `enabled:false`
+ * （`hitTest` 会跳过 disabled 项），只有弹窗自己的两个按钮可点 ——
+ * 这样「删除存档」不会因为误触底下那一排而真的删掉东西。
+ */
+export type PendingConfirm =
+  | { kind: 'delete-run'; characterId: string }
+  | { kind: 'reset-all' };
+
 export interface MenuState {
   mode: MenuMode;
   previous: MenuMode;
   selectedChar: number;
   codexTab: CodexTab;
   codexIndex: number;
-  confirmReset: boolean;
+  /** 非 null 时弹出二次确认对话框（删除单份存档 / 清空全部数据）。 */
+  confirm: PendingConfirm | null;
   lobby: LobbyInfo;
 }
 
@@ -128,7 +139,7 @@ export function createMenuState(): MenuState {
     selectedChar: 0,
     codexTab: 'weapon',
     codexIndex: 0,
-    confirmReset: false,
+    confirm: null,
     lobby: createLobbyInfo(),
   };
 }
@@ -138,36 +149,53 @@ export interface MenuData {
   settings: GameSettings;
   discoveredWeapons: string[];
   unlockedCharacters: string[];
+  /** 已存在的远征存档（按落盘时间由新到旧）。存档管理页按角色查它，主菜单取 [0]。 */
+  saves: SaveSlotInfo[];
 }
 
-/** 主菜单「继续远征」需要的最少信息（UI 层不直接依赖存档结构）。 */
-export interface SavedRunInfo {
-  floor: number;
+/** 存档列表需要的最少信息（UI 层不直接依赖存档结构）。 */
+export interface SaveSlotInfo {
   characterId: string;
+  floor: number;
+  timeSec: number;
+  score: number;
+  /** 落盘时间戳（毫秒） */
+  savedAt: number;
 }
 
-export function buildMenuButtons(state: MenuState, savedRun?: SavedRunInfo | null): UiButton[] {
+/** 存档列表每行的几何：6 名角色 → y 152..584，正好落在标题与底部按钮之间。 */
+const SAVE_ROW = { x: 200, y0: 152, w: 880, h: 62, gap: 12 };
+
+/** 存档行里「继续 / 删除」两个按钮的尺寸（相对行）。 */
+const SAVE_BTN = { contX: 876, delX: 980, yOff: 11, w: 92, h: 40 };
+
+export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[] = []): UiButton[] {
   const buttons: UiButton[] = [];
+  // 有确认弹窗时，页面上原有的按钮一律 disabled：画出来保持版式不跳，
+  // 但 hitTest 会跳过它们，于是点击只可能落在弹窗上（真·模态）。
+  const locked = state.confirm !== null;
   switch (state.mode) {
     case 'main': {
       const w = 300;
       const x = 92;
       // 已在房间内：按钮变成「返回房间」（回到大厅等待，不会掉线）
       const inRoom = state.lobby.phase === 'room' && state.lobby.code.length > 0;
-      if (savedRun) {
+      const latest = saves[0];
+      if (latest) {
         // 有未完成的远征：首行拆成「继续远征 / 新的远征」，避免玩家以为只能重开
         buttons.push({
           id: 'resume-run',
-          label: `继续远征 · 第 ${savedRun.floor} 层`,
+          label: `继续远征 · 第 ${latest.floor} 层`,
           x,
           y: 356,
           w: 250,
           h: 52,
           style: 'accent',
+          enabled: !locked,
         });
-        buttons.push({ id: 'start', label: '新的远征', x: 354, y: 356, w: 146, h: 52, style: 'primary' });
+        buttons.push({ id: 'start', label: '新的远征', x: 354, y: 356, w: 146, h: 52, style: 'primary', enabled: !locked });
       } else {
-        buttons.push({ id: 'start', label: '开始远征', x, y: 356, w, h: 52, style: 'accent' });
+        buttons.push({ id: 'start', label: '开始远征', x, y: 356, w, h: 52, style: 'accent', enabled: !locked });
       }
       buttons.push({
         id: 'multi',
@@ -177,10 +205,72 @@ export function buildMenuButtons(state: MenuState, savedRun?: SavedRunInfo | nul
         w,
         h: 46,
         style: inRoom ? 'accent' : 'primary',
+        enabled: !locked,
       });
-      buttons.push({ id: 'codex', label: '图鉴', x, y: 470, w, h: 42, style: 'ghost' });
-      buttons.push({ id: 'settings', label: '设置', x, y: 518, w, h: 42, style: 'ghost' });
-      buttons.push({ id: 'reset', label: state.confirmReset ? '再次点击确认清除存档' : '清除存档', x, y: 566, w, h: 38, style: 'danger' });
+      buttons.push({ id: 'codex', label: '图鉴', x, y: 470, w, h: 42, style: 'ghost', enabled: !locked });
+      buttons.push({ id: 'settings', label: '设置', x, y: 518, w, h: 42, style: 'ghost', enabled: !locked });
+      // 存档管理：每名角色一份进度，可单独继续 / 删除（删完还能「清空全部」）。
+      // 带角标是因为「有存档」这件事值得在主菜单就看得见。
+      buttons.push({
+        id: 'saves',
+        label: saves.length ? `存档管理 · ${saves.length}` : '存档管理',
+        x,
+        y: 566,
+        w,
+        h: 38,
+        style: 'ghost',
+        enabled: !locked,
+      });
+      break;
+    }
+    case 'saves': {
+      for (let i = 0; i < CHARACTERS.length; i++) {
+        const def = CHARACTERS[i]!;
+        const y = SAVE_ROW.y0 + i * (SAVE_ROW.h + SAVE_ROW.gap);
+        const slot = saves.find((s) => s.characterId === def.id);
+        if (slot) {
+          buttons.push({
+            id: `save-continue:${def.id}`,
+            label: '继续',
+            x: SAVE_BTN.contX,
+            y: y + SAVE_BTN.yOff,
+            w: SAVE_BTN.w,
+            h: SAVE_BTN.h,
+            style: 'accent',
+            enabled: !locked,
+          });
+          buttons.push({
+            id: `save-delete:${def.id}`,
+            label: '删除',
+            x: SAVE_BTN.delX,
+            y: y + SAVE_BTN.yOff,
+            w: SAVE_BTN.w,
+            h: SAVE_BTN.h,
+            style: 'danger',
+            enabled: !locked,
+          });
+        }
+      }
+      buttons.push({
+        id: 'clear-all-runs',
+        label: '清空全部存档',
+        x: (1280 - 300) / 2,
+        y: 606,
+        w: 300,
+        h: 42,
+        style: 'danger',
+        enabled: !locked && saves.length > 0,
+      });
+      buttons.push({
+        id: 'menu-back',
+        label: '返回大厅',
+        x: (1280 - 220) / 2,
+        y: 658,
+        w: 220,
+        h: 46,
+        style: 'accent',
+        enabled: !locked,
+      });
       break;
     }
     case 'multi': {
@@ -299,6 +389,19 @@ export function buildMenuButtons(state: MenuState, savedRun?: SavedRunInfo | nul
       break;
     }
   }
+  // 确认弹窗的两个按钮**最后追加**：hitTest 从后往前找，所以它们一定压过底下的按钮。
+  if (state.confirm) {
+    buttons.push({
+      id: 'confirm-yes',
+      label: state.confirm.kind === 'reset-all' ? '确认清空' : '确认删除',
+      x: 468,
+      y: 390,
+      w: 160,
+      h: 48,
+      style: 'danger',
+    });
+    buttons.push({ id: 'confirm-no', label: '取消', x: 652, y: 390, w: 160, h: 48, style: 'ghost' });
+  }
   return buttons;
 }
 
@@ -323,6 +426,9 @@ export function drawMenu(
       break;
     case 'codex':
       drawCodex(ctx, state, buttons, hoverId, time, data);
+      break;
+    case 'saves':
+      drawSaves(ctx, state, buttons, hoverId, time, data);
       break;
     case 'multi':
       drawLobby(ctx, state, buttons, hoverId, time);
@@ -1063,6 +1169,167 @@ function drawSettingsPanel(
   for (const b of buttons) {
     if (b.id.startsWith('toggle:')) continue;
     drawButton(ctx, b, hoverId === b.id, false, time);
+  }
+}
+
+// ------------------------------------------------------------------ 存档管理
+
+/** 「09-20 13:04」——列表里不占年份，够用了。 */
+function stampLabel(savedAt: number): string {
+  const d = new Date(savedAt);
+  if (!Number.isFinite(d.getTime())) return '时间未知';
+  const p = (n: number): string => n.toString().padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * 存档管理页：**每名角色一行**，没有存档的也列出来（这样「谁还没有进度」一眼可见）。
+ * 有存档的行给「继续 / 删除」，没有的行只在右侧留一句提示。
+ */
+function drawSaves(
+  ctx: CanvasRenderingContext2D,
+  state: MenuState,
+  buttons: readonly UiButton[],
+  hoverId: string | null,
+  time: number,
+  data: MenuData,
+): void {
+  ctx.save();
+  ctx.fillStyle = 'rgba(9,7,15,0.72)';
+  ctx.fillRect(0, 0, 1280, 720);
+  ctx.restore();
+  drawHeading(ctx, '存档管理', 640, 52, 30);
+
+  const markedId = state.confirm?.kind === 'delete-run' ? state.confirm.characterId : null;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = '500 13px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillText('每名角色各自保留一份未完成的远征，可单独继续或删除。', 640, 90);
+  ctx.restore();
+
+  for (let i = 0; i < CHARACTERS.length; i++) {
+    const def = CHARACTERS[i]!;
+    const y = SAVE_ROW.y0 + i * (SAVE_ROW.h + SAVE_ROW.gap);
+    const slot = data.saves.find((s) => s.characterId === def.id);
+    const unlocked = isCharacterUnlocked(def, data.progress);
+    const marked = markedId === def.id;
+
+    ctx.save();
+    ctx.fillStyle = slot ? 'rgba(30,25,44,0.9)' : 'rgba(18,14,28,0.7)';
+    roundRect(ctx, SAVE_ROW.x, y, SAVE_ROW.w, SAVE_ROW.h, 10);
+    ctx.fill();
+    ctx.strokeStyle = marked ? UI_COLORS.danger : slot ? 'rgba(255,212,121,0.34)' : 'rgba(140,132,170,0.2)';
+    ctx.lineWidth = marked ? 2.4 : 1.4;
+    roundRect(ctx, SAVE_ROW.x, y, SAVE_ROW.w, SAVE_ROW.h, 10);
+    ctx.stroke();
+    ctx.restore();
+
+    // 头像直接复用角色卡那套立绘（位图角色贴 PNG，矢量角色程序化画），别再画一套。
+    drawCharacterPortrait(ctx, def, SAVE_ROW.x + 46, y + SAVE_ROW.h / 2 + 4, 0.56, time, !unlocked);
+
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = slot ? UI_COLORS.text : 'rgba(206,198,232,0.6)';
+    ctx.font = '700 17px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(def.name, SAVE_ROW.x + 92, y + 22);
+    const nameW = ctx.measureText(def.name).width;
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.font = '500 12px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(def.title, SAVE_ROW.x + 92 + nameW + 10, y + 23);
+    ctx.font = '500 13px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(
+      slot
+        ? `第 ${slot.floor} 层 · 用时 ${formatTime(slot.timeSec)} · 得分 ${slot.score} · 存档于 ${stampLabel(slot.savedAt)}`
+        : '暂无存档',
+      SAVE_ROW.x + 92,
+      y + 44,
+    );
+    ctx.restore();
+
+    if (!slot) {
+      ctx.save();
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(206,198,232,0.45)';
+      ctx.font = '500 12px "PingFang SC","Segoe UI",sans-serif';
+      ctx.fillText('开始远征后自动保存', SAVE_ROW.x + SAVE_ROW.w - 22, y + SAVE_ROW.h / 2);
+      ctx.restore();
+    }
+
+    for (const id of [`save-continue:${def.id}`, `save-delete:${def.id}`]) {
+      const b = buttons.find((x) => x.id === id);
+      if (b) drawButton(ctx, b, hoverId === b.id, false, time);
+    }
+  }
+
+  for (const id of ['clear-all-runs', 'menu-back']) {
+    const b = buttons.find((x) => x.id === id);
+    if (b) drawButton(ctx, b, hoverId === b.id, false, time);
+  }
+
+  if (state.confirm) drawConfirm(ctx, state, buttons, hoverId, time, data);
+}
+
+/**
+ * 删除类操作的二次确认（模态）。
+ * 文案全部由 `state.confirm` 推导，所以「删某份档」和「清空全部」共用同一个弹窗。
+ */
+function drawConfirm(
+  ctx: CanvasRenderingContext2D,
+  state: MenuState,
+  buttons: readonly UiButton[],
+  hoverId: string | null,
+  time: number,
+  data: MenuData,
+): void {
+  const c = state.confirm;
+  if (!c) return;
+  const resetAll = c.kind === 'reset-all';
+  const def = c.kind === 'delete-run' ? CHARACTERS.find((d) => d.id === c.characterId) : undefined;
+  const slot = c.kind === 'delete-run' ? data.saves.find((s) => s.characterId === c.characterId) : null;
+
+  drawDim(ctx, 0.74);
+  const w = 620;
+  const h = 252;
+  const x = (1280 - w) / 2;
+  const y = 208;
+  drawPanel(ctx, x, y, w, h, { border: 'rgba(255,122,106,0.55)' });
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.danger;
+  ctx.font = '800 25px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillText(resetAll ? '清空全部存档' : '删除存档', 640, y + 46);
+
+  ctx.fillStyle = UI_COLORS.text;
+  ctx.font = '600 17px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillText(
+    resetAll ? `确定要清空全部 ${data.saves.length} 份存档吗？` : `确定要删除「${def?.name ?? c.characterId}」的存档吗？`,
+    640,
+    y + 96,
+  );
+
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = '500 14px "PingFang SC","Segoe UI",sans-serif';
+  if (resetAll) {
+    ctx.fillText('设置、已解锁角色与历史统计不受影响。', 640, y + 128);
+  } else if (slot) {
+    ctx.fillText(`当前进度：第 ${slot.floor} 层 · 用时 ${formatTime(slot.timeSec)} · 得分 ${slot.score}`, 640, y + 128);
+  }
+
+  ctx.fillStyle = 'rgba(255,150,130,0.9)';
+  ctx.font = '600 14px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillText('删除后无法恢复。', 640, y + 158);
+  ctx.restore();
+
+  for (const id of ['confirm-yes', 'confirm-no']) {
+    const b = buttons.find((x2) => x2.id === id);
+    if (b) drawButton(ctx, b, hoverId === b.id, false, time);
   }
 }
 

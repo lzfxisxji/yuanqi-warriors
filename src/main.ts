@@ -14,6 +14,7 @@ import { WorldRenderer } from './render/renderer';
 import { AudioSystem } from './systems/audio';
 import { SaveManager } from './systems/save';
 import type { RunResult, SavedRun } from './systems/run';
+import { computeScore } from './systems/run';
 import { GameplayScene, type GameHost } from './scenes/gameplay';
 import { NetClient } from './net/NetClient';
 import type { NetMode, PeerInfo } from './net/protocol';
@@ -25,6 +26,7 @@ import {
   type CodexTab,
   type MenuData,
   type MenuState,
+  type SaveSlotInfo,
 } from './ui/screens';
 import { UI_COLORS, hitTest, type UiButton } from './ui/widgets';
 
@@ -82,7 +84,7 @@ class App implements GameHost {
     this.syncCursor();
 
     // 菜单初始按钮
-    this.menuButtons = buildMenuButtons(this.menuState, this.save.savedRun);
+    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
 
     // 玩家在浏览器里经常先点一下才能出声：任何输入都尝试初始化音频上下文
     window.addEventListener('pointerdown', () => this.audio.init(), { once: false });
@@ -182,13 +184,28 @@ class App implements GameHost {
       settings: this.save.data.settings,
       discoveredWeapons: this.save.data.discoveredWeapons,
       unlockedCharacters: this.save.data.unlockedCharacters,
+      saves: this.saveSlots(),
     };
+  }
+
+  /**
+   * 存档列表（UI 用的精简结构）。得分走 `computeScore`，与局内 `RunState.score`
+   * 是同一个函数 —— 存档页显示的分数必须和玩家当时看到的结算分一致。
+   */
+  private saveSlots(): SaveSlotInfo[] {
+    return this.save.listRuns().map((r) => ({
+      characterId: r.characterId,
+      floor: r.floor,
+      timeSec: r.timeSec,
+      score: computeScore(r),
+      savedAt: r.savedAt,
+    }));
   }
 
   private updateMenu(_dt: number): void {
     const lb = this.menuState.lobby;
     if (this.menuState.mode === 'multi' && lb.joining) this.handleLobbyKeyInput();
-    this.menuButtons = buildMenuButtons(this.menuState, this.save.savedRun);
+    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
     const p = this.input.pointer;
     const hovered = hitTest(this.menuButtons, p.sx, p.sy);
     this.hoverId = hovered ? hovered.id : null;
@@ -199,6 +216,11 @@ class App implements GameHost {
       return;
     }
     if (this.input.wasPressed('Escape') && this.menuState.mode !== 'main') {
+      // 确认弹窗优先：Esc 先关弹窗，而不是把整页也一起退掉
+      if (this.menuState.confirm) {
+        this.menuState.confirm = null;
+        return;
+      }
       // 加入房间输入中：Esc 先退出输入
       if (this.menuState.mode === 'multi' && lb.joining) {
         lb.joining = false;
@@ -231,6 +253,16 @@ class App implements GameHost {
     if (id.startsWith('codex-tab-')) {
       st.codexTab = id.slice('codex-tab-'.length) as CodexTab;
       st.codexIndex = 0;
+      return;
+    }
+    if (id.startsWith('save-continue:')) {
+      this.resumeRun(id.slice('save-continue:'.length));
+      return;
+    }
+    if (id.startsWith('save-delete:')) {
+      // 关键：**不直接删**。先挂起一个待确认项，真正落盘在 confirm-yes 里做。
+      st.confirm = { kind: 'delete-run', characterId: id.slice('save-delete:'.length) };
+      this.audio.play('error', 0.5);
       return;
     }
     if (id.startsWith('set:')) {
@@ -299,12 +331,16 @@ class App implements GameHost {
         st.mode = 'codex';
         st.codexIndex = 0;
         break;
+      case 'saves':
+        st.previous = 'main';
+        st.mode = 'saves';
+        break;
       case 'settings':
         st.previous = 'main';
         st.mode = 'settings';
         break;
       case 'menu-back':
-        st.confirmReset = false;
+        st.confirm = null;
         st.mode = st.previous === 'main' || st.previous === st.mode ? 'main' : st.previous;
         break;
       case 'confirm-char': {
@@ -317,16 +353,26 @@ class App implements GameHost {
         this.startRun(def.id);
         break;
       }
-      case 'reset':
-        if (!st.confirmReset) {
-          st.confirmReset = true;
+      // 清空全部存档也要走二次确认（原先的「清除存档」是「再点一次确认」，
+      // 点错一次还不够，索性统一成弹窗）。这里只负责**挂起**确认请求。
+      case 'clear-all-runs':
+        if (this.save.hasAnyRun) {
+          st.confirm = { kind: 'reset-all' };
           this.audio.play('error', 0.6);
-        } else {
-          st.confirmReset = false;
-          this.save.reset();
-          this.applyAudioSettings();
-          this.audio.play('doorLock', 0.8);
         }
+        break;
+      case 'confirm-yes': {
+        // 删除动作的唯一落地点：只有这里会真的动存档
+        const pending = st.confirm;
+        st.confirm = null;
+        if (!pending) break;
+        if (pending.kind === 'delete-run') this.save.deleteRun(pending.characterId);
+        else this.save.clearAllRuns();
+        this.audio.play('doorLock', 0.8);
+        break;
+      }
+      case 'confirm-no':
+        st.confirm = null;
         break;
       default:
         break;
@@ -365,16 +411,34 @@ class App implements GameHost {
   // ------------------------------------------------------------- 地牢
 
   private startRun(characterId: string): void {
-    // 开新局就意味着上一局的存档点作废（新局进第一个房间时会立刻写入自己的存档）
-    this.save.clearRun();
+    // 开新局只作废**这个角色**上一局的存档点（新局进第一个房间就会写入自己的）；
+    // 别的角色的进度原样保留 —— 这是需求 20 与旧「单槽位」行为最关键的区别。
+    this.save.deleteRun(characterId);
     this.beginRun(characterId, null);
   }
 
-  /** 继续未完成的远征：角色与种子都取自存档，按存档把玩家放回原房间。 */
-  private resumeRun(): void {
-    const saved = this.save.savedRun;
+  /**
+   * 继续未完成的远征。
+   * 带 `characterId` 时继续指定角色那份（存档管理页的「继续」）；
+   * 不带时继续**最近一次**落盘的（主菜单的「继续远征」）。
+   */
+  private resumeRun(characterId?: string): void {
+    const saved = characterId ? this.save.getRun(characterId) : this.save.latestRun;
     if (!saved) return;
     this.beginRun(saved.characterId, saved);
+  }
+
+  /**
+   * 这一局结束（死亡 / 通关 / 放弃）后作废**它自己的**存档点。
+   *
+   * 必须比对种子再删：联机局不写档，如果无脑按角色 id 删，
+   * 打完一局联机的奶龙会把「奶龙的单机进度」一起删掉。
+   */
+  private forgetRunOfPlayedGame(characterId: string): void {
+    const stored = this.save.getRun(characterId);
+    if (!stored) return;
+    if (this.game && stored.seed !== this.game.state.seed) return;
+    this.save.deleteRun(characterId);
   }
 
   private beginRun(characterId: string, resume: SavedRun | null): void {
@@ -392,7 +456,7 @@ class App implements GameHost {
 
   /** 一局结束（死亡 / 通关）后回大厅。 */
   endRun(result: RunResult): void {
-    this.save.clearRun();
+    this.forgetRunOfPlayedGame(result.characterId);
     this.save.recordRun({
       floor: result.floor,
       won: result.won,
@@ -407,9 +471,9 @@ class App implements GameHost {
 
   /** 主动放弃远征：同样计入统计，但不算通关。 */
   abandonRun(): void {
-    this.save.clearRun();
     if (this.game) {
       const r = this.game.state.result(false);
+      this.forgetRunOfPlayedGame(r.characterId);
       this.save.recordRun({
         floor: r.floor,
         won: false,
@@ -441,7 +505,7 @@ class App implements GameHost {
     this.netRoomCode = '';
     this.scene = 'menu';
     this.menuState = createMenuState();
-    this.menuButtons = buildMenuButtons(this.menuState, this.save.savedRun);
+    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
     this.hoverId = null;
   }
 

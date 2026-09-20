@@ -65,6 +65,28 @@ export interface SavedRun {
   savedAt: number;
 }
 
+/**
+ * 得分的**唯一出处**：`RunState.score`（局内实时）与存档管理页的「得分」
+ * 共用这一个函数 —— 之前公式只长在 getter 里，存档列表要显示得分就只能再抄一遍，
+ * 抄完迟早跟这边对不上。
+ */
+export function computeScore(s: {
+  floor: number;
+  gold: number;
+  timeSec: number;
+  bossDefeated: boolean;
+  stats: { kills: number; rooms: number };
+}): number {
+  return Math.round(
+    s.stats.kills * 12 +
+      s.stats.rooms * 34 +
+      s.gold * 0.6 +
+      s.floor * 420 +
+      (s.bossDefeated ? 900 : 0) +
+      Math.max(0, 1800 - s.timeSec * 1.4),
+  );
+}
+
 export class RunState {
   readonly character: CharacterDef;
   readonly seed: number;
@@ -153,15 +175,7 @@ export class RunState {
   }
 
   get score(): number {
-    const s = this.stats;
-    return Math.round(
-      s.kills * 12 +
-        s.rooms * 34 +
-        this.gold * 0.6 +
-        this.floor * 420 +
-        (this.bossDefeated ? 900 : 0) +
-        Math.max(0, 1800 - this.timeSec * 1.4),
-    );
+    return computeScore(this);
   }
 
   result(won: boolean): RunResult {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   SAVE_KEY,
+  SAVE_VERSION,
   SaveManager,
   createMemoryStorage,
   defaultSave,
@@ -8,6 +9,31 @@ import {
   parseSave,
 } from '../src/systems/save';
 import { SAVED_RUN_VERSION, type SavedRun } from '../src/systems/run';
+
+/** 造一份结构合法的远征存档（需求 20 的每角色槽位测试用）。 */
+function makeRun(characterId: string, floor = 1, savedAt = 1000): SavedRun {
+  return {
+    version: SAVED_RUN_VERSION,
+    characterId,
+    seed: 12345,
+    floor,
+    gold: 0,
+    upgrades: [],
+    weapons: [{ id: 'pistol', ammo: 3 }],
+    weaponIndex: 0,
+    hp: 100,
+    shield: 0,
+    barrier: 0,
+    timeSec: 0,
+    bossDefeated: false,
+    currentRoomKey: 'r0',
+    visited: ['r0'],
+    cleared: [],
+    rooms: {},
+    stats: { kills: 0, rooms: 0, damageDealt: 0, damageTaken: 0, goldEarned: 0, shotsFired: 0 },
+    savedAt,
+  };
+}
 
 describe('存档：健壮性解析', () => {
   test('空 / 非法数据返回默认存档', () => {
@@ -141,5 +167,116 @@ describe('存档：读写与进度', () => {
     storage.setItem(SAVE_KEY, '{ 这不是 JSON');
     const save = new SaveManager(storage);
     expect(save.data).toEqual(defaultSave());
+  });
+});
+
+describe('存档：每角色一份（需求 20）', () => {
+  test('默认存档没有任何续玩进度，且版本已升到 3', () => {
+    const save = new SaveManager(createMemoryStorage());
+    expect(save.hasAnyRun).toBe(false);
+    expect(save.listRuns()).toEqual([]);
+    expect(save.latestRun).toBeNull();
+    expect(SAVE_VERSION).toBe(3);
+  });
+
+  test('不同角色的存档互不覆盖，按落盘时间由新到旧排列', () => {
+    const save = new SaveManager(createMemoryStorage());
+    save.setRun(makeRun('milkdragon', 2, 200));
+    save.setRun(makeRun('lulu', 1, 100));
+    expect(save.hasAnyRun).toBe(true);
+    expect(save.listRuns().map((r) => r.characterId)).toEqual(['milkdragon', 'lulu']);
+    expect(save.getRun('milkdragon')!.floor).toBe(2);
+    expect(save.getRun('lulu')!.floor).toBe(1);
+    // 「最近一次」是主菜单「继续远征」取的那份
+    expect(save.latestRun!.characterId).toBe('milkdragon');
+    expect(save.getRun('niulai')).toBeNull();
+  });
+
+  test('同一角色重复落盘是覆盖，不会变成两条', () => {
+    const save = new SaveManager(createMemoryStorage());
+    save.setRun(makeRun('lulu', 1, 100));
+    save.setRun(makeRun('lulu', 3, 300));
+    expect(save.listRuns()).toHaveLength(1);
+    expect(save.getRun('lulu')!.floor).toBe(3);
+  });
+
+  test('deleteRun 只删指定角色，其余存档原样保留且已落盘', () => {
+    const storage = createMemoryStorage();
+    const save = new SaveManager(storage);
+    save.setRun(makeRun('milkdragon', 2, 200));
+    save.setRun(makeRun('lulu', 1, 100));
+    save.deleteRun('lulu');
+
+    expect(save.getRun('lulu')).toBeNull();
+    expect(save.getRun('milkdragon')!.floor).toBe(2);
+    // 重新读盘确认真的写进去了（不是只改了内存）
+    expect(new SaveManager(storage).getRun('lulu')).toBeNull();
+    expect(new SaveManager(storage).getRun('milkdragon')!.floor).toBe(2);
+  });
+
+  test('删除不存在的角色是安全的空操作', () => {
+    const save = new SaveManager(createMemoryStorage());
+    save.setRun(makeRun('lulu', 1, 100));
+    expect(() => save.deleteRun('nobody')).not.toThrow();
+    expect(save.listRuns()).toHaveLength(1);
+  });
+
+  test('clearAllRuns 清空全部存档，但设置 / 解锁 / 历史统计不动', () => {
+    const save = new SaveManager(createMemoryStorage());
+    save.setRun(makeRun('milkdragon', 2, 200));
+    save.setRun(makeRun('lulu', 1, 100));
+    save.unlockCharacter('sting');
+    save.discoverWeapon('smg');
+    save.recordRun({ floor: 2, won: true, timeSec: 90, kills: 10, rooms: 4, score: 999 });
+    save.updateSettings({ masterVolume: 0.42 });
+
+    save.clearAllRuns();
+
+    expect(save.hasAnyRun).toBe(false);
+    expect(save.listRuns()).toEqual([]);
+    expect(save.data.unlockedCharacters).toEqual(['sting']);
+    expect(save.data.discoveredWeapons).toEqual(['smg']);
+    expect(save.data.progress.wins).toBe(1);
+    expect(save.data.progress.bestScore).toBe(999);
+    expect(save.data.settings.masterVolume).toBeCloseTo(0.42, 6);
+  });
+
+  test('旧版单槽存档（run）自动迁移到新的每角色结构，进度不丢', () => {
+    const parsed = parseSave({ run: makeRun('sting', 2, 500) });
+    expect(parsed.runs.sting).toBeDefined();
+    expect(parsed.runs.sting!.floor).toBe(2);
+    expect(parsed.runs.sting!.characterId).toBe('sting');
+  });
+
+  test('新结构已有该角色时，旧 run 槽位不会覆盖它', () => {
+    const parsed = parseSave({
+      runs: { sting: makeRun('sting', 3, 900) },
+      run: makeRun('sting', 1, 100),
+    });
+    expect(parsed.runs.sting!.floor).toBe(3);
+  });
+
+  test('键与存档自报的 characterId 不一致时整条丢弃（避免张冠李戴）', () => {
+    const parsed = parseSave({ runs: { lulu: makeRun('milkdragon', 2, 200) } });
+    expect(Object.keys(parsed.runs)).toEqual([]);
+  });
+
+  test('runs 里的坏条目被单独丢弃，好条目照样留下', () => {
+    const parsed = parseSave({
+      runs: {
+        lulu: makeRun('lulu', 1, 100),
+        badNumber: 42,
+        badObject: { characterId: 'x' },
+        // 名称对得上但缺武器 → parseSavedRun 判为坏档
+        noWeapons: { ...makeRun('niulai', 1, 100), weapons: [] },
+      },
+    });
+    expect(Object.keys(parsed.runs)).toEqual(['lulu']);
+  });
+
+  test('runs 是数组 / 字符串等非法类型时安全回落为空', () => {
+    expect(parseSave({ runs: [] }).runs).toEqual({});
+    expect(parseSave({ runs: 'oops' }).runs).toEqual({});
+    expect(parseSave({ runs: null }).runs).toEqual({});
   });
 });

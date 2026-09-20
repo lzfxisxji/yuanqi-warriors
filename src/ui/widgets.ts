@@ -248,6 +248,17 @@ export function drawKeyHint(
 }
 
 /** 全屏暗化背景。 */
+/**
+ * 秒 → `m:ss`。结算面板与存档列表共用一份实现
+ * （原先只长在 overlays.ts 里，需求 20 的存档页也要用，所以挪到公共组件层）。
+ */
+export function formatTime(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const ss = (s % 60).toString().padStart(2, '0');
+  return `${m}:${ss}`;
+}
+
 export function drawDim(ctx: CanvasRenderingContext2D, alpha = 0.66): void {
   ctx.save();
   ctx.fillStyle = `rgba(6,5,13,${alpha})`;

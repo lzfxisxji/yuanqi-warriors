@@ -13,6 +13,7 @@ import {
   drawHeading,
   drawKeyHint,
   drawPanel,
+  formatTime,
   wrapText,
   type UiButton,
 } from './widgets';
@@ -847,9 +848,4 @@ function drawSummary(
   void clamp;
 }
 
-export function formatTime(sec: number): string {
-  const s = Math.max(0, Math.floor(sec));
-  const m = Math.floor(s / 60);
-  const ss = (s % 60).toString().padStart(2, '0');
-  return `${m}:${ss}`;
-}
+export { formatTime } from './widgets';

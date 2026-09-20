@@ -48,12 +48,18 @@ export interface SaveData {
   unlockedCharacters: string[];
   discoveredWeapons: string[];
   progress: GameProgress;
-  /** 未完成的远征（单机）。为 null 表示没有可续玩的进度。 */
-  run: SavedRun | null;
+  /**
+   * **每名角色各存一份**未完成的远征（单机），键 = 角色 id。
+   *
+   * 需求 20 之前这里是单个 `run: SavedRun | null` 槽位：换角色开新局会把上一个人的
+   * 进度直接挤掉。改成按角色分槽后，推到第 2 层的奶龙和刚开始的噜噜可以同时留着，
+   * 存档管理页里也能逐份删除。
+   */
+  runs: Record<string, SavedRun>;
 }
 
 export const SAVE_KEY = 'yuanqi-warriors:save:v1';
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 export function defaultSettings(): GameSettings {
   return {
@@ -86,7 +92,7 @@ export function defaultSave(): SaveData {
     unlockedCharacters: [],
     discoveredWeapons: [],
     progress: defaultProgress(),
-    run: null,
+    runs: {},
   };
 }
 
@@ -185,6 +191,28 @@ function defaultRunStats(): RunState['stats'] {
   return { kills: 0, rooms: 0, damageDealt: 0, damageTaken: 0, goldEarned: 0, shotsFired: 0 };
 }
 
+/**
+ * 解析「每角色一份」的远征存档表。
+ *
+ * - 非法条目直接丢弃（`parseSavedRun` 已经把坏档挡掉了）；
+ * - **键必须与存档自己记录的 characterId 一致**，对不上就丢弃而不是改写 ——
+ *   宁可少一份档，也不要出现「点奶龙却载入噜噜」这种张冠李戴；
+ * - `legacyRun` 是旧版（SAVE_VERSION ≤ 2）的单个 `run` 槽位，迁移进新结构，
+ *   老玩家升级后原有的续玩进度不会丢。
+ */
+function parseRuns(raw: unknown, legacyRun: unknown): Record<string, SavedRun> {
+  const runs: Record<string, SavedRun> = {};
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      const parsed = parseSavedRun(value);
+      if (parsed && parsed.characterId === key) runs[key] = parsed;
+    }
+  }
+  const legacy = parseSavedRun(legacyRun);
+  if (legacy && !runs[legacy.characterId]) runs[legacy.characterId] = legacy;
+  return runs;
+}
+
 /** 反序列化并逐字段做健壮性校验，避免旧存档 / 脏数据导致崩溃。 */
 export function parseSave(raw: unknown): SaveData {
   const base = defaultSave();
@@ -213,7 +241,7 @@ export function parseSave(raw: unknown): SaveData {
     },
     unlockedCharacters: strArray(obj.unlockedCharacters),
     discoveredWeapons: strArray(obj.discoveredWeapons),
-    run: parseSavedRun(obj.run),
+    runs: parseRuns(obj.runs, obj.run),
     progress: {
       bestFloor: Math.max(1, Math.floor(num(progressRaw.bestFloor, 1))),
       wins: Math.max(0, Math.floor(num(progressRaw.wins, 0))),
@@ -312,20 +340,46 @@ export class SaveManager {
 
   // ------------------------------------------------------------- 远征存档
 
-  get savedRun(): SavedRun | null {
-    return this.data.run;
+  /** 某角色未完成的远征；没有就返回 null。 */
+  getRun(characterId: string): SavedRun | null {
+    return this.data.runs[characterId] ?? null;
   }
 
-  /** 覆盖写入当前远征进度（自动存档点：进新房间 / 定时心跳）。 */
+  /** 全部未完成的远征，按落盘时间**由新到旧**排序（主菜单取 [0] 当「继续远征」）。 */
+  listRuns(): SavedRun[] {
+    return Object.values(this.data.runs).sort((a, b) => b.savedAt - a.savedAt);
+  }
+
+  /** 是否存在任意可续玩的进度。 */
+  get hasAnyRun(): boolean {
+    return Object.keys(this.data.runs).length > 0;
+  }
+
+  /** 最近一次落盘的进度。 */
+  get latestRun(): SavedRun | null {
+    return this.listRuns()[0] ?? null;
+  }
+
+  /** 覆盖写入某角色的远征进度（自动存档点：进新房间 / 定时心跳）。 */
   setRun(run: SavedRun): void {
-    this.data.run = run;
+    this.data.runs[run.characterId] = run;
     this.save();
   }
 
-  /** 远征结束 / 放弃 / 通关后清掉进度，菜单不再提供「继续远征」。 */
-  clearRun(): void {
-    if (this.data.run === null) return;
-    this.data.run = null;
+  /**
+   * 删除**某一名角色**的存档（存档管理页的「删除」/ 该角色开新局 / 该角色打完一局）。
+   * 只影响这一个键，其它角色的进度原样保留。
+   */
+  deleteRun(characterId: string): void {
+    if (!Object.prototype.hasOwnProperty.call(this.data.runs, characterId)) return;
+    delete this.data.runs[characterId];
+    this.save();
+  }
+
+  /** 删除全部角色的存档（存档管理页的「清空全部存档」）。设置与历史统计不动。 */
+  clearAllRuns(): void {
+    if (!this.hasAnyRun) return;
+    this.data.runs = {};
     this.save();
   }
 }

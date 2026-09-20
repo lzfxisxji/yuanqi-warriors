@@ -7,6 +7,8 @@
  *   2. 图鉴增加**角色图鉴**分页（与武器/敌人共用「左列表 + 右详情」）。
  *   3. 图鉴增加**Boss 图鉴**分页（需求 18）：每层 Boss 一条，详情给称号 /
  *      战斗数值 / 四个技能名，且 Boss 条目不参与角色的解锁判定。
+ *   4. 新增**存档管理**页（需求 20）：每名角色一行（有档的给「继续 / 删除」），
+ *      删除走模态二次确认 —— 未确认时页面上其余按钮全部失效，点不出误删。
  *
  * 这里用假 ctx 记录所有 fillText 调用，断言：
  *   - 空状态：显示占位提示，旧的发现进度文案与下半部分说明彻底消失
@@ -23,9 +25,11 @@ import {
   drawMenu,
   type MenuData,
   type MenuState,
+  type SaveSlotInfo,
 } from '../src/ui/screens';
 import { CHARACTERS } from '../src/data/characters';
 import { BOSSES } from '../src/data/bosses';
+import { hitTest } from '../src/ui/widgets';
 import type { GameProgress, GameSettings } from '../src/systems/save';
 
 // ------------------------------------------------------------------ 脚手架
@@ -102,21 +106,29 @@ const SETTINGS: GameSettings = {
   showSystemCursor: false,
 };
 
-function menuData(): MenuData {
-  return { progress: PROGRESS, settings: SETTINGS, discoveredWeapons: [], unlockedCharacters: [] };
+function menuData(saves: SaveSlotInfo[] = []): MenuData {
+  return { progress: PROGRESS, settings: SETTINGS, discoveredWeapons: [], unlockedCharacters: [], saves };
+}
+
+/** 造一条存档列表项（需求 20）。 */
+function slot(characterId: string, floor: number, savedAt = 0): SaveSlotInfo {
+  return { characterId, floor, timeSec: 0, score: 0, savedAt };
 }
 
 /** 渲染一帧主菜单（或指定页面），返回所有被绘制的文字。 */
-function render(state: MenuState): DrawnText[] {
+function render(state: MenuState, saves: SaveSlotInfo[] = []): DrawnText[] {
   const { ctx, texts } = recordingCtx();
-  drawMenu(ctx, state, buildMenuButtons(state), null, 0.5, menuData());
+  drawMenu(ctx, state, buildMenuButtons(state, saves), null, 0.5, menuData(saves));
   return texts;
 }
 
 /** 同上，但把 measureText 的调用明细也带出来（要断言「用对字体量宽度」时用）。 */
-function renderAll(state: MenuState): { texts: DrawnText[]; measured: MeasuredText[] } {
+function renderAll(
+  state: MenuState,
+  saves: SaveSlotInfo[] = [],
+): { texts: DrawnText[]; measured: MeasuredText[] } {
   const { ctx, texts, measured } = recordingCtx();
-  drawMenu(ctx, state, buildMenuButtons(state), null, 0.5, menuData());
+  drawMenu(ctx, state, buildMenuButtons(state, saves), null, 0.5, menuData(saves));
   return { texts, measured };
 }
 
@@ -494,7 +506,7 @@ describe('图鉴分页', () => {
 
 describe('主菜单：续玩入口（需求16-2）', () => {
   test('有未完成远征时首行拆成「继续远征 / 新的远征」', () => {
-    const buttons = buildMenuButtons(createMenuState(), { floor: 3, characterId: 'wolfshade' });
+    const buttons = buildMenuButtons(createMenuState(), [slot('wolfshade', 3)]);
     const resume = buttons.find((b) => b.id === 'resume-run');
     expect(resume).toBeDefined();
     expect(resume!.label).toBe('继续远征 · 第 3 层');
@@ -508,6 +520,12 @@ describe('主菜单：续玩入口（需求16-2）', () => {
     const buttons = buildMenuButtons(createMenuState());
     expect(buttons.find((b) => b.id === 'resume-run')).toBeUndefined();
     expect(buttons.find((b) => b.id === 'start')!.label).toBe('开始远征');
+  });
+
+  test('多份存档时「继续远征」取列表首项（= 最近落盘的那份）', () => {
+    // 传进来的顺序就是 save.ts listRuns() 的顺序：新的在前
+    const buttons = buildMenuButtons(createMenuState(), [slot('milkdragon', 2, 200), slot('lulu', 1, 100)]);
+    expect(buttons.find((b) => b.id === 'resume-run')!.label).toBe('继续远征 · 第 2 层');
   });
 });
 
@@ -542,5 +560,127 @@ describe('联机大厅：模式卡说明文字不溢出（需求16-3）', () => 
       expect(l.x).toBeCloseTo(830, 0);
       expect(l.x).toBeGreaterThanOrEqual(650);
     }
+  });
+});
+
+// ------------------------------------------------------------------ 需求 20
+
+describe('存档管理页（需求 20）', () => {
+  function savesState(): MenuState {
+    const state = createMenuState();
+    state.mode = 'saves';
+    state.previous = 'main';
+    return state;
+  }
+
+  /** 两份档：奶龙第 2 层、噜噜第 1 层（顺序 = listRuns() 的「新的在前」）。 */
+  const SAVES = [slot('milkdragon', 2, 200), slot('lulu', 1, 100)];
+
+  test('每名角色一行；有档的行给「继续 / 删除」，没档的行一个按钮都不给', () => {
+    const buttons = buildMenuButtons(savesState(), SAVES);
+    // 行的顺序跟 CHARACTERS 走（列表里角色顺序是固定的），不是跟存档新旧走
+    const withSave = CHARACTERS.filter((c) => SAVES.some((s) => s.characterId === c.id));
+    expect(withSave.length).toBe(2);
+    expect(buttons.filter((b) => b.id.startsWith('save-continue:')).map((b) => b.id)).toEqual(
+      withSave.map((c) => `save-continue:${c.id}`),
+    );
+    expect(buttons.filter((b) => b.id.startsWith('save-delete:')).map((b) => b.id)).toEqual(
+      withSave.map((c) => `save-delete:${c.id}`),
+    );
+    // 没有存档的角色一个按钮都没有（避免点到不存在的槽位）
+    for (const c of CHARACTERS) {
+      if (SAVES.some((s) => s.characterId === c.id)) continue;
+      expect(buttons.find((b) => b.id === `save-continue:${c.id}`)).toBeUndefined();
+      expect(buttons.find((b) => b.id === `save-delete:${c.id}`)).toBeUndefined();
+    }
+  });
+
+  test('六名角色全部列出（含「暂无存档」的），有档的显示楼层/用时/得分/存档时间', () => {
+    const joined = render(savesState(), SAVES)
+      .map((t) => t.text)
+      .join('|');
+    for (const c of CHARACTERS) expect(joined).toContain(c.name);
+    expect(joined).toContain('第 2 层 · 用时 0:00 · 得分 0 · 存档于');
+    expect(joined).toContain('暂无存档');
+    expect(joined).toContain('开始远征后自动保存');
+  });
+
+  test('行内按钮不越界，且同行不重叠、相邻行不叠罗汉', () => {
+    const buttons = buildMenuButtons(savesState(), SAVES);
+    const cont = buttons.filter((b) => b.id.startsWith('save-continue:'));
+    const del = buttons.filter((b) => b.id.startsWith('save-delete:'));
+    expect(cont).toHaveLength(2);
+    for (let i = 0; i < cont.length; i++) {
+      const c = cont[i]!;
+      const d = del[i]!;
+      for (const b of [c, d]) {
+        expect(b.x).toBeGreaterThanOrEqual(0);
+        expect(b.y).toBeGreaterThanOrEqual(0);
+        expect(b.x + b.w).toBeLessThanOrEqual(1280);
+        expect(b.y + b.h).toBeLessThanOrEqual(720);
+      }
+      // 同行：继续在左、删除在右，不重叠
+      expect(c.x + c.w).toBeLessThanOrEqual(d.x);
+      // 跨行：两条同位置按钮纵向不重叠
+      if (i > 0) expect(cont[i - 1]!.y + cont[i - 1]!.h).toBeLessThanOrEqual(c.y);
+    }
+  });
+
+  test('未确认时不弹出任何对话框', () => {
+    const joined = render(savesState(), SAVES)
+      .map((t) => t.text)
+      .join('|');
+    expect(joined).not.toContain('删除后无法恢复。');
+    expect(buildMenuButtons(savesState(), SAVES).find((b) => b.id === 'confirm-yes')).toBeUndefined();
+  });
+
+  test('点「删除」只挂起确认，不会直接落盘（模态：其余按钮全部失效）', () => {
+    const state = savesState();
+    state.confirm = { kind: 'delete-run', characterId: 'milkdragon' };
+    const buttons = buildMenuButtons(state, SAVES);
+
+    // 唯一可点的只剩弹窗那两个 —— 这是「删除必须确认」的结构性保证
+    expect(buttons.filter((b) => b.enabled !== false).map((b) => b.id)).toEqual(['confirm-yes', 'confirm-no']);
+
+    // 拿未弹窗时的「删除」坐标去点，什么也命中不到（不会误删）
+    const delBtn = buildMenuButtons(savesState(), SAVES).find((b) => b.id === 'save-delete:milkdragon')!;
+    expect(hitTest(buttons, delBtn.x + delBtn.w / 2, delBtn.y + delBtn.h / 2)).toBeNull();
+    // 但弹窗自己的按钮是能命中的（避免上面那条断言空转）
+    const yes = buttons.find((b) => b.id === 'confirm-yes')!;
+    expect(hitTest(buttons, yes.x + yes.w / 2, yes.y + yes.h / 2)?.id).toBe('confirm-yes');
+  });
+
+  test('删除确认弹窗写明是哪名角色、当前进度与不可恢复', () => {
+    const state = savesState();
+    state.confirm = { kind: 'delete-run', characterId: 'milkdragon' };
+    const joined = render(state, SAVES)
+      .map((t) => t.text)
+      .join('|');
+    expect(joined).toContain('删除存档');
+    expect(joined).toContain('确定要删除「奶龙」的存档吗？');
+    expect(joined).toContain('当前进度：第 2 层');
+    expect(joined).toContain('删除后无法恢复。');
+    expect(joined).toContain('取消');
+  });
+
+  test('清空全部：文案带上真实份数，并说明不影响设置与统计', () => {
+    const state = savesState();
+    state.confirm = { kind: 'reset-all' };
+    const joined = render(state, SAVES)
+      .map((t) => t.text)
+      .join('|');
+    expect(joined).toContain('清空全部存档');
+    expect(joined).toContain('确定要清空全部 2 份存档吗？');
+    expect(joined).toContain('设置、已解锁角色与历史统计不受影响。');
+    expect(buildMenuButtons(state, SAVES).find((b) => b.id === 'confirm-yes')!.label).toBe('确认清空');
+  });
+
+  test('主菜单「存档管理」按钮带份数角标；无存档时清空按钮禁用', () => {
+    const withSaves = buildMenuButtons(createMenuState(), SAVES).find((b) => b.id === 'saves')!;
+    expect(withSaves.label).toBe('存档管理 · 2');
+    const empty = buildMenuButtons(createMenuState()).find((b) => b.id === 'saves')!;
+    expect(empty.label).toBe('存档管理');
+    expect(buildMenuButtons(savesState()).find((b) => b.id === 'clear-all-runs')!.enabled).toBe(false);
+    expect(buildMenuButtons(savesState(), SAVES).find((b) => b.id === 'clear-all-runs')!.enabled).toBe(true);
   });
 });
