@@ -75,6 +75,14 @@ export class Player extends Entity {
   /** 攻击前摇计时（用于美术的蓄力动作） */
   chargeTimer = 0;
 
+  /**
+   * 近战挥砍动画（需求 21）：剩余时间 / 总时长，单位秒。
+   * 由武器系统在每次挥砍成功时写入，`art.ts` 据此把武器从「抬举」扫到「收势」；
+   * `meleeSwingTimer === 0` 表示这一帧没有在挥（此时武器按普通持械姿势画）。
+   */
+  meleeSwingTimer = 0;
+  meleeSwingDuration = 0.42;
+
   /** 技能状态 */
   skillCooldown = 0;
   skillActiveTimer = 0;
@@ -211,6 +219,7 @@ export class Player extends Entity {
 
   startReload(): void {
     const w = this.currentWeapon;
+    if (w.def.kind === 'melee') return; // 近战没有弹匣，永不换弹
     if (w.reloadTimer > 0) return;
     if (w.ammo >= w.magSize) return;
     w.reloadTimer = Math.max(0.15, w.def.reloadTime * this.mods.reloadMul);
@@ -222,6 +231,8 @@ export class Player extends Entity {
     const w = this.currentWeapon;
     if (w.reloadTimer > 0) return false;
     if (w.cooldown > 0) return false;
+    // 近战武器无弹药概念：只要不在冷却里就能挥
+    if (w.def.kind === 'melee') return true;
     if (w.ammo <= 0) {
       this.startReload();
       return false;
@@ -231,14 +242,32 @@ export class Player extends Entity {
 
   consumeShot(cost = 1): void {
     const w = this.currentWeapon;
-    w.ammo = Math.max(0, w.ammo - cost);
+    const melee = w.def.kind === 'melee';
+    if (!melee) w.ammo = Math.max(0, w.ammo - cost);
     const rate = w.def.fireRate * this.mods.fireRateMul;
     w.cooldown = 1 / Math.max(0.05, rate);
-    w.recoil = 1;
+    if (!melee) w.recoil = 1; // 近战的后坐由挥砍动画表现，不走枪械的后坐位移
     w.shotsFired += 1;
     this.attackTimer = Math.min(0.16, 0.06 + w.def.recoil * 0.09);
     this.shotsFired += 1;
-    if (w.ammo <= 0) this.startReload();
+    if (!melee && w.ammo <= 0) this.startReload();
+  }
+
+  /**
+   * 挥砍动画进度：0 = 刚起手，1 = 已收势；不在挥砍时为 `null`。
+   * `art.ts` 用它算武器应该转到哪个角度；`null` 而不是 0 是为了区分
+   * 「正在第 0 帧」和「根本没在挥」。
+   */
+  get meleeSwingProgress(): number | null {
+    if (this.meleeSwingTimer <= 0) return null;
+    const total = Math.max(0.001, this.meleeSwingDuration);
+    return clamp(1 - this.meleeSwingTimer / total, 0, 1);
+  }
+
+  /** 开始一次挥砍动画（武器系统在命中判定前调用）。 */
+  startMeleeSwing(duration = 0.42): void {
+    this.meleeSwingDuration = Math.max(0.05, duration);
+    this.meleeSwingTimer = this.meleeSwingDuration;
   }
 
   /** 激光类持续消耗弹药，返回是否成功消耗。 */
@@ -351,6 +380,7 @@ export class Player extends Entity {
     if (this.dead) {
       this.deathTimer += dt;
       this.regening = false;
+      this.meleeSwingTimer = 0; // 死亡后不再保持挥砍姿势
       this.updateCommon(dt);
       return;
     }
@@ -360,6 +390,7 @@ export class Player extends Entity {
     this.attackTimer = Math.max(0, this.attackTimer - dt);
     this.hurtTimer = Math.max(0, this.hurtTimer - dt);
     this.chargeTimer = Math.max(0, this.chargeTimer - dt);
+    this.meleeSwingTimer = Math.max(0, this.meleeSwingTimer - dt);
     this.timeSinceDamage += dt;
     for (const w of this.weapons) {
       w.cooldown = Math.max(0, w.cooldown - dt);

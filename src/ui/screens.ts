@@ -113,6 +113,17 @@ const CODEX_TAB_X = 92;
 const CODEX_TAB_STEP = 164;
 
 /**
+ * 图鉴左列表**每页行数**（需求 21 补）。
+ *
+ * 行高 58、首行 y=160，第 8 行底边是 616 —— 正好压在底部「返回大厅」按钮（y=644）之上。
+ * 武器表从 8 件涨到 12 件（新增 4 把近战）之后必须分页，否则第 9 行会被返回按钮盖住、
+ * 第 12 行（y=798）直接跑出 720 高的画面。每页 8 行正好复刻分页之前的版式。
+ */
+export const CODEX_PAGE_SIZE = 8;
+/** 分页控件所在的那一行。 */
+const CODEX_PAGER_Y = 620;
+
+/**
  * 危险操作的二次确认。设置后界面进入**模态**：底下所有按钮被标成 `enabled:false`
  * （`hitTest` 会跳过 disabled 项），只有弹窗自己的两个按钮可点 ——
  * 这样「删除存档」不会因为误触底下那一排而真的删掉东西。
@@ -127,6 +138,8 @@ export interface MenuState {
   selectedChar: number;
   codexTab: CodexTab;
   codexIndex: number;
+  /** 图鉴左列表当前页码（0 起）。列表条目多于 CODEX_PAGE_SIZE 时才会用到。 */
+  codexPage: number;
   /** 非 null 时弹出二次确认对话框（删除单份存档 / 清空全部数据）。 */
   confirm: PendingConfirm | null;
   lobby: LobbyInfo;
@@ -139,6 +152,7 @@ export function createMenuState(): MenuState {
     selectedChar: 0,
     codexTab: 'weapon',
     codexIndex: 0,
+    codexPage: 0,
     confirm: null,
     lobby: createLobbyInfo(),
   };
@@ -373,16 +387,44 @@ export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[
         });
       });
       const listLen = codexList(state.codexTab).length;
-      for (let i = 0; i < listLen; i++) {
+      const pages = Math.max(1, Math.ceil(listLen / CODEX_PAGE_SIZE));
+      const page = clamp(state.codexPage, 0, pages - 1);
+      const start = page * CODEX_PAGE_SIZE;
+      const end = Math.min(listLen, start + CODEX_PAGE_SIZE);
+      // 只为本页可见的条目建按钮；行号 id 仍用**全局下标**，这样 codexIndex 的语义不变，
+      // 翻页不会把"当前选中"错位到别的条目上。
+      for (let i = start; i < end; i++) {
         buttons.push({
           id: `codex:${i}`,
           label: '',
           x: 92,
-          y: 160 + i * 58,
+          y: 160 + (i - start) * 58,
           w: 340,
           h: 50,
           style: 'ghost',
           card: true,
+        });
+      }
+      if (pages > 1) {
+        buttons.push({
+          id: 'codex-page-prev',
+          label: '上一页',
+          x: 92,
+          y: CODEX_PAGER_Y,
+          w: 110,
+          h: 40,
+          style: 'ghost',
+          enabled: page > 0,
+        });
+        buttons.push({
+          id: 'codex-page-next',
+          label: '下一页',
+          x: 214,
+          y: CODEX_PAGER_Y,
+          w: 110,
+          h: 40,
+          style: 'ghost',
+          enabled: page < pages - 1,
         });
       }
       buttons.push({ id: 'menu-back', label: '返回大厅', x: (1280 - 220) / 2, y: 644, w: 220, h: 48, style: 'accent' });
@@ -1341,6 +1383,11 @@ function codexList(tab: CodexTab): ReadonlyArray<{ id: string; name: string; des
   return CHARACTERS;
 }
 
+/** 图鉴某分页的条目总数（main.ts 翻页时用来算总页数 / 跳页后的选中下标）。 */
+export function codexListLength(tab: CodexTab): number {
+  return codexList(tab).length;
+}
+
 /**
  * 左列表每一行的副标题。不同分页给不同的关键信息，
  * 放在一处集中处理 —— 之前是嵌在循环里的四层三目，加一页就很难读。
@@ -1446,6 +1493,19 @@ function drawCodex(
     ctx.restore();
   }
 
+  // 分页指示：只有条目多到需要翻页时才画（8 件武器时保持原版画面）
+  const codexPages = Math.max(1, Math.ceil(list.length / CODEX_PAGE_SIZE));
+  if (codexPages > 1) {
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.font = '600 13px "PingFang SC","Segoe UI",sans-serif';
+    const page = clamp(state.codexPage, 0, codexPages - 1);
+    ctx.fillText(`第 ${page + 1} / ${codexPages} 页 · 共 ${list.length} 条`, 336, CODEX_PAGER_Y + 20);
+    ctx.restore();
+  }
+
   // 右侧详情
   const item = list[state.codexIndex] ?? list[0]!;
   const known = isWeapon ? data.discoveredWeapons.includes(item.id) : true;
@@ -1474,16 +1534,30 @@ function drawCodex(
   } else if (isWeapon) {
     const def = item as WeaponDef;
     drawWeaponIcon(ctx, def, 500, 380, 76);
-    const stats: Array<[string, string]> = [
-      ['单发伤害', `${def.damage * def.pellets}`],
-      ['射速', `${def.fireRate.toFixed(2)} 次/秒`],
-      ['弹匣', `${def.mag}`],
-      ['换弹', `${def.reloadTime.toFixed(2)} 秒`],
-      ['弹速', `${def.bulletSpeed}`],
-      ['射程', `${def.range}`],
-      ['散布', `${(def.spread * 57.3).toFixed(1)}°`],
-      ['贯穿 / 弹射', `${def.pierce} / ${def.bounce}`],
-    ];
+    // 近战武器没有弹匣 / 弹速 / 散布，照远程的表头填会得到一排 0 和「∞ / 1」这种废话，
+    // 所以换一套表头：把"怎么打、打多远、一次打几个"讲清楚。
+    const melee = def.kind === 'melee';
+    const stats: Array<[string, string]> = melee
+      ? [
+          ['单次伤害', `${def.damage}`],
+          ['挥砍速度', `${def.fireRate.toFixed(2)} 次/秒`],
+          ['攻击范围', `${Math.round(def.range)}`],
+          ['挥砍张角', `${((def.swingArc ?? 0) * 57.3).toFixed(0)}°`],
+          ['击退', `${def.knockback}`],
+          ['弹药', '不消耗'],
+          ['判定', '扇形 · 范围内全中'],
+          ['暴击率', `${Math.round(def.crit * 100)}%`],
+        ]
+      : [
+          ['单发伤害', `${def.damage * def.pellets}`],
+          ['射速', `${def.fireRate.toFixed(2)} 次/秒`],
+          ['弹匣', `${def.mag}`],
+          ['换弹', `${def.reloadTime.toFixed(2)} 秒`],
+          ['弹速', `${def.bulletSpeed}`],
+          ['射程', `${def.range}`],
+          ['散布', `${(def.spread * 57.3).toFixed(1)}°`],
+          ['贯穿 / 弹射', `${def.pierce} / ${def.bounce}`],
+        ];
     ctx.save();
     ctx.textBaseline = 'middle';
     let sx = 560;
@@ -1673,6 +1747,8 @@ function kindLabel(kind: string): string {
       return '火焰';
     case 'grenade':
       return '爆炸';
+    case 'melee':
+      return '近战';
     default:
       return kind;
   }

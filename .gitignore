@@ -6,3 +6,5 @@ _env.txt
 .workbuddy/
 # 会话临时输出文件
 .*.txt
+# playwright-cli 的会话缓存（快照 / 截图），不入库
+.playwright-cli/

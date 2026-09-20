@@ -683,9 +683,12 @@ describe('游戏主循环冒烟测试', () => {
     scene.handleKey('Escape');
     expect(() => runFrames(scene, 5)).not.toThrow();
 
-    // 点击「设置」（暂停菜单里 设置 按钮位于 y 360..410）
+    // 点击「设置」（暂停菜单五行的第 4 行：x 490..790 / y 426..474）
+    // ⚠️ 添加「保存进度 / 保存并返回大厅」两个出口后，设置按钮从 y 360 下移到 426 ——
+    // 这里必须跟着 buildOverlayButtons 的 'pause' 分支一起改，否则会点到
+    // 「保存并返回大厅」上（测试静默走错分支）。
     host.input.pointer.sx = 640;
-    host.input.pointer.sy = 385;
+    host.input.pointer.sy = 450;
     host.input.pointer.justDown = true;
     scene.update(1 / 60);
     host.input.pointer.justDown = false;

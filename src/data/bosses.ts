@@ -13,7 +13,7 @@
  * 每层 Boss 的碰撞半径统一参考第一关（52），保证手感一致。
  */
 import type { BossAttackKind } from '../entities/boss';
-import { FLOOR_COUNT } from './config';
+import { FLOOR_COUNT, floorPower } from './config';
 
 export interface BossPalette {
   /** 外辉光 / 预警主色（"r,g,b" 字符串，用于 telegraph 与辉光） */
@@ -42,13 +42,6 @@ export interface BossDef {
   floor: number;
   /** 碰撞半径（参考第一关 = 52） */
   radius: number;
-  /** 第 1 层基准血量 */
-  baseHp: number;
-  /** 每多一层的血量增量 */
-  hpPerFloor: number;
-  /** 接触伤害基准（每秒） */
-  contactDamageBase: number;
-  contactDamagePerFloor: number;
   palette: BossPalette;
   /** 每个阶段可用的攻击类型池（index 0 = 阶段 1） */
   phaseAttacks: BossAttackKind[][];
@@ -61,6 +54,20 @@ export interface BossDef {
   skillNames: [string, string, string, string];
 }
 
+/**
+ * 三层 Boss 共用的**第 1 层基准值**（需求 21）。
+ *
+ * 「每层的血量与攻击力都是上一层的 1.5 倍」这条规则要成立，基准就必须三层一致 ——
+ * 实际值 = 基准 × `floorPower(floor)`，于是血量 2100 / 3150 / 4725、
+ * 接触伤害 32 / 48 / 72，比值恒为 1.5。
+ *
+ * 刻意**不放在 BossDef 里**：写成每层各自的 `baseHp` 只是"约定"，
+ * 谁改歪一个数就把曲线破坏了；做成共用常量则是结构上不可能违反。
+ * Boss 之间的个性体现在攻击方式 / 配色 / 召唤物上，不在数值斜率上。
+ */
+export const BOSS_HP_BASE = 2100;
+export const BOSS_CONTACT_BASE = 32;
+
 // 第 1 层：熔核·渊心（程序化，原版）
 const YUANXIN: BossDef = {
   id: 'yuanxin',
@@ -69,10 +76,6 @@ const YUANXIN: BossDef = {
   desc: '地牢最深处自行拼合出的装甲造物，八枚甲片环绕着不熄的熔核，越受创越狂暴。',
   floor: 1,
   radius: 52,
-  baseHp: 2100,
-  hpPerFloor: 900,
-  contactDamageBase: 32,
-  contactDamagePerFloor: 7,
   palette: { glow: '255,90,70', core: '#ffc46a', body: '#332c40', accent: '#ff8a3c', bullet: '#ffd9a0', bulletGlow: '#ff8a2b' },
   phaseAttacks: [
     ['fanSpread', 'aimedBurst'],
@@ -94,10 +97,6 @@ const DOUBAO: BossDef = {
   sprite: 'doubao',
   floor: 2,
   radius: 52,
-  baseHp: 2000,
-  hpPerFloor: 850,
-  contactDamageBase: 30,
-  contactDamagePerFloor: 6,
   palette: { glow: '120,190,255', core: '#ffe07a', body: '#cfe8ff', accent: '#3aa0ff', bullet: '#eaf7ff', bulletGlow: '#3aa0ff' },
   phaseAttacks: [
     ['fanSpread', 'aimedBurst'],
@@ -119,10 +118,6 @@ const DEEPSEEK: BossDef = {
   sprite: 'deepseek',
   floor: 3,
   radius: 52,
-  baseHp: 2400,
-  hpPerFloor: 950,
-  contactDamageBase: 34,
-  contactDamagePerFloor: 7,
   palette: { glow: '60,160,255', core: '#7fd8ff', body: '#1b3a5c', accent: '#2b7fff', bullet: '#d6ecff', bulletGlow: '#2b7fff' },
   phaseAttacks: [
     ['ringBurst', 'aimedBurst'],
@@ -171,15 +166,16 @@ export function getBossDefForFloor(floor: number): BossDef {
 /**
  * Boss 在该层的实际血量。
  * **唯一出处**：实体（entities/boss.ts）和图鉴都从这里取，
- * 免得图鉴显示 2000、实战却是 2850 这种两处算法漂移。
+ * 免得图鉴显示 2100、实战却是别的数这种两处算法漂移。
+ * = 第 1 层基准 × `floorPower(floor)`（需求 21：每层 ×1.5）。
  */
 export function bossMaxHp(def: BossDef): number {
-  return Math.round(def.baseHp + def.hpPerFloor * (def.floor - 1));
+  return Math.round(BOSS_HP_BASE * floorPower(def.floor));
 }
 
-/** Boss 在该层的实际接触伤害（每秒）。唯一出处，理由同 bossMaxHp。 */
+/** Boss 在该层的实际接触伤害（每秒，保留一位小数）。唯一出处，理由同 bossMaxHp。 */
 export function bossContactDamage(def: BossDef): number {
-  return def.contactDamageBase + def.contactDamagePerFloor * (def.floor - 1);
+  return Math.round(BOSS_CONTACT_BASE * floorPower(def.floor) * 10) / 10;
 }
 
 /** 校验：FLOOR_BOSSES 必须覆盖 1..FLOOR_COUNT 每一层，且每层 id 唯一、图鉴字段齐备。 */

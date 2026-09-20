@@ -18,6 +18,7 @@ export type SoundName =
   | 'laser'
   | 'flame'
   | 'launcher'
+  | 'melee'
   | 'enemyHit'
   | 'enemyDie'
   | 'playerHurt'
@@ -36,6 +37,7 @@ export type SoundName =
   | 'error'
   | 'chest'
   | 'upgrade'
+  | 'save'
   | 'win'
   | 'lose'
   | 'summon';
@@ -239,6 +241,12 @@ export class AudioSystem {
         this.tone(150, 0.22, 'square', 0.2 * volume, 60);
         this.noise(0.16, 620, 0.2 * volume, 200, 0.9);
         break;
+      case 'melee':
+        // 破空：一段快速下滑的带通噪声（"抡过去"的呼呼声）+ 一个很低的闷音当作钝器砸中的质感。
+        if (this.throttle('melee', 55)) return;
+        this.noise(0.17, 2000, 0.17 * volume, 260, 1.6);
+        this.tone(200, 0.1, 'triangle', 0.06 * volume, 86);
+        break;
       case 'enemyHit':
         if (this.throttle('enemyHit', 28)) return;
         this.noise(0.06, 2600, 0.11 * volume, 900, 1.3);
@@ -314,6 +322,11 @@ export class AudioSystem {
         this.tone(523, 0.16, 'triangle', 0.1 * volume, 660);
         this.tone(660, 0.16, 'triangle', 0.1 * volume, 784, 0.12);
         this.tone(880, 0.28, 'sine', 0.11 * volume, 1046, 0.24);
+        break;
+      case 'save':
+        // 存档确认音：一声轻响 + 一个上扬的短音，克制但有「记下来了」的确定感
+        this.tone(660, 0.08, 'triangle', 0.08 * volume, 880);
+        this.tone(1046, 0.16, 'sine', 0.06 * volume, 1180, 0.09);
         break;
       case 'win':
         [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.5, 'triangle', 0.14 * volume, f * 1.01, i * 0.16));

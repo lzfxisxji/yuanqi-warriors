@@ -2,7 +2,7 @@
  * 武器击发系统：把"武器定义 + 强化"翻译成实际的弹丸 / 光束效果，
  * 并处理后坐、枪口火焰、抛壳、屏幕震动与音效，保证每种武器的反馈都不同。
  */
-import { TAU, clamp, distPointToSegment, normalize } from '../core/math';
+import { TAU, angleDelta, clamp, distPointToSegment, normalize } from '../core/math';
 import type { Player } from '../entities/player';
 import type { ProjectileSystem } from '../entities/projectile';
 import type { Boss } from '../entities/boss';
@@ -39,6 +39,11 @@ export function updateWeapon(fire: WeaponFireContext, firing: boolean): void {
 
   if (def.kind === 'beam') {
     updateBeam(fire, firing);
+    return;
+  }
+
+  if (def.kind === 'melee') {
+    updateMelee(fire, firing);
     return;
   }
 
@@ -232,6 +237,90 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
   });
   ctx.audio.play('laser', 0.35);
   ctx.shake.add(0.008);
+}
+
+/**
+ * 近战类（需求 21）：一次挥砍 = 一个**扇形判定**。
+ *
+ * 以瞄准方向为中线、总张角 `def.swingArc`、半径 `def.range` 的扇形内部，
+ * 所有敌方目标当帧全部命中（近战天然"穿透"，所以不需要贯穿计数）。
+ * 长枪把 swingArc 压到 0.42 rad，于是「中距离直线贯穿」这件事由扇形形状本身表达。
+ *
+ * 与远程最大的区别：**不产生任何弹丸**，也就不吃 pierce / bounce / spread；
+ * 代价是必须贴脸，收益是单次伤害高、必定命中（没有飞行时间，敌人闪不掉）。
+ */
+function updateMelee(fire: WeaponFireContext, firing: boolean): void {
+  const { player, ctx } = fire;
+  player.beamActive = false;
+  if (!firing || !player.canFire()) return;
+
+  const def = player.currentWeapon.def;
+  const mods = player.mods;
+  const range = def.range * mods.rangeMul;
+  const halfArc = Math.max(0.08, (def.swingArc ?? 1.2) * 0.5);
+  const critChance = clamp(def.crit + mods.critAdd, 0, 0.95);
+  const baseAngle = player.aimAngle;
+  const damage = def.damage * mods.damageMul;
+
+  player.consumeShot(1);
+  player.startMeleeSwing(meleeSwingDuration(def.fireRate * mods.fireRateMul));
+
+  let hits = 0;
+  let critical = false;
+  for (const t of fire.targets) {
+    if (t.dead || t.team === player.team) continue;
+    const dx = t.x - player.x;
+    const dy = t.y - player.y;
+    const d = Math.hypot(dx, dy);
+    if (d > range + t.radius) continue;
+    // 目标体积越大越容易"擦到边"：按半径给一点角度宽容，否则打大体型敌人时手感很苛刻。
+    const slack = Math.min(0.5, t.radius / Math.max(1, d));
+    if (Math.abs(angleDelta(baseAngle, Math.atan2(dy, dx))) > halfArc + slack) continue;
+
+    const n = d > 0.001 ? { x: dx / d, y: dy / d } : { x: Math.cos(baseAngle), y: Math.sin(baseAngle) };
+    const crit = Math.random() < critChance;
+    critical = critical || crit;
+    t.applyDamage(damage * (crit ? 1.6 : 1), {
+      crit,
+      source: 'melee',
+      dirX: n.x,
+      dirY: n.y,
+      knockback: def.knockback,
+      color: def.colors.glow,
+    });
+    ctx.particles.hitSparks(t.x, t.y, baseAngle, def.colors.glow, crit ? 9 : 5, crit ? 1.15 : 0.85);
+    hits++;
+  }
+
+  // 抡空了也要有反馈：在弧线前端扬一小撮尘，提示"挥过去了但没碰到人"。
+  if (hits === 0) {
+    for (let i = 0; i < 3; i++) {
+      const a = baseAngle + (Math.random() - 0.5) * halfArc * 2;
+      ctx.particles.spawn({
+        kind: 'ember',
+        x: player.x + Math.cos(a) * range * 0.9,
+        y: player.y + Math.sin(a) * range * 0.9,
+        life: 0.2,
+        size: 5,
+        sizeEnd: 0,
+        color: def.colors.glow,
+        alpha0: 0.32,
+        alpha1: 0,
+        drag: 0,
+      });
+    }
+  }
+
+  ctx.shake.add(def.shakeAmount * (hits > 0 ? 1 + Math.min(0.6, hits * 0.12) : 0.5));
+  ctx.audio.play(def.sound, critical ? 1 : 0.9);
+}
+
+/**
+ * 挥砍动画时长：约占一次挥砍周期的 55%，并夹在 0.28~0.5 秒之间。
+ * 太快看不清弧光，太慢会跟不上 `cooldown`（下一次挥砍已经开始、上一次还没收势）。
+ */
+function meleeSwingDuration(rate: number): number {
+  return clamp(0.55 / Math.max(0.2, rate), 0.28, 0.5);
 }
 
 export { TAU };

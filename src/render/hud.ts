@@ -273,10 +273,19 @@ function drawWeaponPanel(ctx: CanvasRenderingContext2D, p: HudParams): void {
     ctx.textBaseline = 'middle';
     ctx.fillText(inst.def.name, x + 72, y + 19);
 
-    // 弹药
+    // 弹药（近战武器没有弹匣，直接说明"无需弹药"）
+    const melee = inst.def.kind === 'melee';
     const ammoText =
-      inst.reloadTimer > 0 ? '换弹中…' : `${Math.ceil(inst.ammo)} / ${inst.magSize}`;
-    ctx.fillStyle = inst.ammo <= inst.magSize * 0.25 ? '#ff9a7a' : 'rgba(240,232,255,0.92)';
+      melee
+        ? '近战 · 无需弹药'
+        : inst.reloadTimer > 0
+          ? '换弹中…'
+          : `${Math.ceil(inst.ammo)} / ${inst.magSize}`;
+    ctx.fillStyle = melee
+      ? '#ffd479'
+      : inst.ammo <= inst.magSize * 0.25
+        ? '#ff9a7a'
+        : 'rgba(240,232,255,0.92)';
     ctx.font = '700 13px Consolas,"Segoe UI",monospace';
     ctx.fillText(ammoText, x + 72, y + 37);
 
@@ -289,6 +298,16 @@ function drawWeaponPanel(ctx: CanvasRenderingContext2D, p: HudParams): void {
       ctx.fill();
       ctx.fillStyle = '#ffd479';
       roundedRectPath(ctx, x + 150, y + 33, 150 * prog, 8, 4);
+      ctx.fill();
+    } else if (melee) {
+      // 近战：这根条改成「挥砍就绪度」—— 满格 = 下一刀已经可以挥了。
+      const total = 1 / Math.max(0.05, inst.def.fireRate * player.mods.fireRateMul);
+      const ready = clamp(1 - inst.cooldown / total, 0, 1);
+      ctx.fillStyle = 'rgba(10,8,18,0.9)';
+      roundedRectPath(ctx, x + 150, y + 33, 150, 8, 4);
+      ctx.fill();
+      ctx.fillStyle = ready >= 1 ? '#8ef0b0' : '#ffd479';
+      roundedRectPath(ctx, x + 150, y + 33, 150 * ready, 8, 4);
       ctx.fill();
     } else {
       // 弹匣点阵

@@ -9,7 +9,7 @@
  *   - 三层 Boss 的碰撞半径统一参考第一关（52），保证手感一致（用户明确要求）；
  *   - 每层 Boss 的三个阶段攻击池都非空、且攻击类型合法；
  *   - 豆包「召唤伙伴」的 summonIds 必须能在敌人表里解析到，且都配了立绘；
- *   - Boss 实体按定义正确初始化（半径 / 血量 / 接触伤害 / 名称）。
+ *   - Boss 实体正确初始化（半径 / 名称 / title），血量与接触伤害按 `1.5^(floor-1)` 递增（需求 21）。
  */
 import { describe, expect, test } from 'vitest';
 import {
@@ -23,7 +23,7 @@ import {
   type BossDef,
 } from '../src/data/bosses';
 import { getEnemyDef, SUMMON_ENEMIES } from '../src/data/enemies';
-import { FLOOR_COUNT } from '../src/data/config';
+import { FLOOR_COUNT, FLOOR_POWER_STEP } from '../src/data/config';
 import { Boss, type BossAttackKind } from '../src/entities/boss';
 
 const VALID_ATTACKS: ReadonlySet<BossAttackKind> = new Set<BossAttackKind>([
@@ -131,8 +131,8 @@ describe('Boss 实体按定义初始化', () => {
       expect(boss.name).toBe(def.name);
       expect(boss.title).toBe(def.title);
       expect(boss.floor).toBe(f);
-      expect(boss.maxHp).toBe(Math.round(def.baseHp + def.hpPerFloor * (f - 1)));
-      expect(boss.contactDamage).toBe(def.contactDamageBase + def.contactDamagePerFloor * (f - 1));
+      expect(boss.maxHp).toBe(bossMaxHp(def));
+      expect(boss.contactDamage).toBe(bossContactDamage(def));
       expect(boss.def).toBe(def);
     }
   });
@@ -148,6 +148,19 @@ describe('Boss 实体按定义初始化', () => {
     for (let i = 1; i < hp.length; i++) {
       expect(hp[i]!).toBeGreaterThan(hp[i - 1]!);
       expect(cd[i]!).toBeGreaterThan(cd[i - 1]!);
+    }
+  });
+
+  test('每层血量与接触伤害严格是上一层的 1.5 倍（需求 21）', () => {
+    for (let f = 2; f <= FLOOR_COUNT; f++) {
+      const prev = getBossDefForFloor(f - 1);
+      const cur = getBossDefForFloor(f);
+      expect(bossMaxHp(cur) / bossMaxHp(prev)).toBeCloseTo(FLOOR_POWER_STEP, 10);
+      expect(bossContactDamage(cur) / bossContactDamage(prev)).toBeCloseTo(FLOOR_POWER_STEP, 10);
+      // 实体上取到的值与纯函数一致（图鉴 / 实战同源）
+      const b = new Boss(640, 300, cur);
+      expect(b.maxHp).toBe(bossMaxHp(cur));
+      expect(b.contactDamage).toBe(bossContactDamage(cur));
     }
   });
 

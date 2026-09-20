@@ -2,6 +2,7 @@
  * 敌人定义。6 种普通敌人 + 2 种精英敌人，每种拥有不同的 AI 行为与弹幕形态。
  * AI 通过状态机驱动：Idle → Detect → Chase/Position → Attack(前摇) → Cooldown → Hit → Dead
  */
+import { floorPower } from './config';
 
 export type EnemyAI =
   | 'melee' // 近战追击
@@ -344,10 +345,16 @@ export function getEnemyDef(id: string): EnemyDef {
 export const NORMAL_ENEMIES = ENEMIES.filter((e) => !e.elite);
 export const ELITE_ENEMIES = ENEMIES.filter((e) => e.elite);
 
-/** 楼层强度缩放。 */
+/**
+ * 楼层强度缩放（需求 21）。
+ *
+ * **血量与攻击力都用同一个 1.5^(N-1) 系数**：第 2 层正好是第 1 层的 1.5 倍，
+ * 第 3 层正好是第 2 层的 1.5 倍（= 第 1 层的 2.25 倍）。
+ * 系数本身放在 `config.ts` 的 `floorPower()`，和 Boss 共用同一条曲线。
+ */
 export function enemyScale(floor: number): { hp: number; damage: number } {
-  const f = Math.max(1, floor);
-  return { hp: 1 + 0.5 * (f - 1), damage: 1 + 0.32 * (f - 1) };
+  const p = floorPower(floor);
+  return { hp: p, damage: p };
 }
 
 export function scaledHp(def: EnemyDef, floor: number): number {

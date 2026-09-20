@@ -10,6 +10,7 @@ import {
   scaledProjectileDamage,
 } from '../src/data/enemies';
 import { UPGRADES, addUpgrade, computeMods, defaultMods, rollUpgradeChoices, stacksOf } from '../src/data/upgrades';
+import { FLOOR_POWER_STEP, floorPower } from '../src/data/config';
 import { buildCombatWaves, buildEliteWaves, waveEnemyCount } from '../src/data/encounters';
 import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../src/data/characters';
 import { EVENTS } from '../src/data/events';
@@ -147,6 +148,37 @@ describe('敌人表', () => {
     expect(scaledProjectileDamage(sentinel, 3)).toBeGreaterThan(scaledProjectileDamage(sentinel, 1));
     // 无弹丸的敌人返回 0
     expect(scaledProjectileDamage(def, 2)).toBe(0);
+  });
+
+  test('每层血量与攻击力严格是上一层的 1.5 倍（需求 21）', () => {
+    // 1) 曲线本体：系数必须严格等于 1.5^(N-1)
+    expect(floorPower(1)).toBe(1);
+    expect(floorPower(2)).toBe(FLOOR_POWER_STEP);
+    expect(floorPower(3)).toBe(FLOOR_POWER_STEP * FLOOR_POWER_STEP);
+    expect(floorPower(3) / floorPower(2)).toBe(FLOOR_POWER_STEP);
+
+    // 2) 敌人数值严格 = 基础值 × 曲线系数（血量取整到 1，伤害保留 1 位小数）
+    for (const def of ENEMIES) {
+      for (let f = 1; f <= 3; f++) {
+        const p = floorPower(f);
+        expect(scaledHp(def, f)).toBe(Math.round(def.hp * p));
+        expect(scaledContactDamage(def, f)).toBe(Math.round(def.contactDamage * p * 10) / 10);
+        if (def.projectile) {
+          expect(scaledProjectileDamage(def, f)).toBe(Math.round(def.projectile.damage * p * 10) / 10);
+        }
+      }
+
+      // 3) 实际比值贴住 1.5 —— 小数取整会带来 <1% 偏差（如 34→51→77，77/51≈1.0098 倍），
+      //    所以这里用 2% 容忍度，而不是要求数学上的精确相等。
+      const hp1 = scaledHp(def, 1);
+      const hp2 = scaledHp(def, 2);
+      const hp3 = scaledHp(def, 3);
+      const tol = 0.02 * FLOOR_POWER_STEP;
+      expect(Math.abs(hp2 / hp1 - FLOOR_POWER_STEP)).toBeLessThan(tol);
+      expect(Math.abs(hp3 / hp2 - FLOOR_POWER_STEP)).toBeLessThan(tol);
+      const cd1 = scaledContactDamage(def, 1);
+      expect(Math.abs(scaledContactDamage(def, 2) / cd1 - FLOOR_POWER_STEP)).toBeLessThan(tol);
+    }
   });
 
   test('getEnemyDef 对未知 id 抛错（避免静默失败）', () => {

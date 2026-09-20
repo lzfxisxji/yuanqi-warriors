@@ -75,6 +75,15 @@ export interface OverlayState {
   event: EventRuntime | null;
   death: DeathSummary | null;
   summary: string | null;
+  /**
+   * 暂停面板里的存档状态一行字（例：`已保存 · 第 2 层 · 12:34`）。
+   *
+   * 存档本身是全自动的（进房间 / 每 4 秒 / 按 Esc 都会落盘），但玩家看不见 ——
+   * 于是「明明存了却以为没存」。打开暂停面板时由场景填好，玩家一眼能确认。
+   */
+  saveNotice: string;
+  /** 「放弃远征」的二次确认态：true 时暂停面板只剩「确认放弃 / 取消」两个出口。 */
+  confirmAbandon: boolean;
 }
 
 export interface OverlayContext {
@@ -102,6 +111,8 @@ export function createOverlayState(): OverlayState {
     event: null,
     death: null,
     summary: null,
+    saveNotice: '',
+    confirmAbandon: false,
   };
 }
 
@@ -111,11 +122,27 @@ export function buildOverlayButtons(overlay: OverlayState, ctx: OverlayContext):
   const buttons: UiButton[] = [];
   switch (overlay.mode) {
     case 'pause': {
-      const w = 260;
+      // 五个出口排成一列（面板 118..602，见 drawPause）：
+      // 「保存进度」是玩家唯一能**看见**存档确实发生的地方（面板下方那行状态字），
+      // 「保存并返回大厅」是"今天先玩到这"的正解 —— 它不会作废存档，
+      // 而「放弃远征」会，所以后者必须先过一道二次确认。
+      const w = 300;
       const x = (1280 - w) / 2;
-      buttons.push({ id: 'resume', label: '继续游戏', x, y: 300, w, h: 50 });
-      buttons.push({ id: 'settings', label: '设置', x, y: 360, w, h: 50, style: 'ghost' });
-      buttons.push({ id: 'abandon', label: '放弃远征', x, y: 420, w, h: 50, style: 'danger' });
+      const h = 48;
+      if (overlay.confirmAbandon) {
+        // 确认态是一个独立的紧凑对话框（面板 190..520），按钮位置另算
+        buttons.push({ id: 'abandon-confirm', label: '确认放弃远征', x, y: 302, w, h, style: 'danger' });
+        buttons.push({ id: 'abandon-cancel', label: '取消，继续游戏', x, y: 362, w, h, style: 'ghost' });
+        break;
+      }
+      const gap = 12;
+      const startY = 246;
+      const row = (i: number) => startY + i * (h + gap);
+      buttons.push({ id: 'resume', label: '继续游戏', x, y: row(0), w, h });
+      buttons.push({ id: 'save', label: '保存进度', x, y: row(1), w, h, style: 'ghost' });
+      buttons.push({ id: 'save-exit', label: '保存并返回大厅', x, y: row(2), w, h, style: 'ghost' });
+      buttons.push({ id: 'settings', label: '设置', x, y: row(3), w, h, style: 'ghost' });
+      buttons.push({ id: 'abandon', label: '放弃远征', x, y: row(4), w, h, style: 'danger' });
       break;
     }
     case 'upgrade': {
@@ -292,7 +319,7 @@ export function drawOverlay(
 
   switch (overlay.mode) {
     case 'pause':
-      drawPause(ctx2d, buttons, hoverId, time);
+      drawPause(ctx2d, overlay, buttons, hoverId, time);
       break;
     case 'settings':
       drawSettings(ctx2d, buttons, hoverId, time, ctx.settings);
@@ -321,19 +348,40 @@ export function drawOverlay(
 
 function drawPause(
   ctx: CanvasRenderingContext2D,
+  overlay: OverlayState,
   buttons: readonly UiButton[],
   hoverId: string | null,
   time: number,
 ): void {
-  drawPanel(ctx, 380, 190, 520, 320, { radius: 18 });
-  drawHeading(ctx, '已暂停', 640, 240, 34);
-  drawDivider(ctx, 430, 266, 420);
+  if (overlay.confirmAbandon) {
+    // 紧凑确认框：只留两个出口 + 把"为什么要确认"说清楚
+    drawPanel(ctx, 380, 190, 520, 330, { radius: 18 });
+    drawHeading(ctx, '确认放弃？', 640, 236, 34);
+    drawDivider(ctx, 430, 264, 420);
+    for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
+    drawHeading(ctx, '放弃远征会删除该角色的存档，且无法恢复', 640, 452, 14, 'center', '#ff8a6a');
+    drawHeading(ctx, '想留着进度改天再打，请选「保存并返回大厅」', 640, 478, 13, 'center', 'rgba(206,198,232,0.78)');
+    return;
+  }
+
+  drawPanel(ctx, 380, 118, 520, 484, { radius: 18 });
+  drawHeading(ctx, '已暂停', 640, 166, 34);
+  drawDivider(ctx, 430, 194, 420);
   for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
+  drawHeading(
+    ctx,
+    overlay.saveNotice || '进度会自动保存（进新房间 / 每 4 秒 / 按 Esc）',
+    640,
+    540,
+    13,
+    'center',
+    overlay.saveNotice ? '#7ef2c0' : 'rgba(206,198,232,0.6)',
+  );
   drawHeading(
     ctx,
     '操作：WASD 移动 · 鼠标瞄准 · 左键射击 · Space 技能 · E 交互 · 1/2 切枪 · R 换弹',
     640,
-    492,
+    570,
     12,
     'center',
     'rgba(206,198,232,0.6)',

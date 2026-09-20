@@ -1,11 +1,17 @@
 /**
- * 武器定义。8 种武器在伤害、射速、弹速、散布、射程、弹匣、换弹、后坐、弹道上全部有真实差异，
+ * 武器定义。8 种远程武器在伤害、射速、弹速、散布、射程、弹匣、换弹、后坐、弹道上全部有真实差异，
  * 且射击反馈（枪口焰、弹道、命中音、屏幕震动）各不相同。
+ *
+ * 另有 4 把**近战武器**（`kind: 'melee'`，需求 21 补）—— 设计取自 `weapon/weapon.png` 的
+ * 「近战武器 MELEE WEAPONS」设定表（咸鱼 / 狼牙棒 / 木棍 / 长枪）：
+ * 伤害值与攻速按表内数值填写，尺寸与攻击范围由本项目自行设定。
+ * 近战不消耗弹药、不换弹，命中判定是「瞄准方向前方的一个扇形」（见 `swingArc`），
+ * 因此 `bulletSpeed` / `spread` / `mag` / `reloadTime` 这些远程字段对它们不生效。
  */
 
-export type WeaponKind = 'bullet' | 'beam' | 'flame' | 'grenade';
-export type ProjectileShape = 'bolt' | 'pellet' | 'shell' | 'orb' | 'flameJet' | 'grenade';
-export type WeaponSound = 'pistol' | 'rifle' | 'shotgun' | 'sniper' | 'smg' | 'laser' | 'flame' | 'launcher';
+export type WeaponKind = 'bullet' | 'beam' | 'flame' | 'grenade' | 'melee';
+export type ProjectileShape = 'bolt' | 'pellet' | 'shell' | 'orb' | 'flameJet' | 'grenade' | 'blade';
+export type WeaponSound = 'pistol' | 'rifle' | 'shotgun' | 'sniper' | 'smg' | 'laser' | 'flame' | 'launcher' | 'melee';
 
 /**
  * 全武器基础伤害倍率 —— 「初始攻击力」的唯一调节点。
@@ -18,6 +24,25 @@ export const WEAPON_DAMAGE_MUL = 1.4;
 /** 基础伤害按 WEAPON_DAMAGE_MUL 折算（保留一位小数，避免浮点噪声）。 */
 function dmg(base: number): number {
   return Math.round(base * WEAPON_DAMAGE_MUL * 10) / 10;
+}
+
+/**
+ * 近战伤害换算系数：设定表（`weapon/weapon.png`）上的「伤害值」是**相对强度**
+ * （咸鱼 25 / 狼牙棒 40 / 木棍 20 / 长枪 35），换算到本作要再乘这个数。
+ *
+ * 为什么不能照抄：本作近战每秒只挥 0.8~1.5 次，而远程是 5~22 次。
+ * 照抄的话四把近战的基础 DPS 只有 42~49，远低于本项目「任何武器基础 DPS ≥ 60」
+ * 的下限（`tests/data.test.ts` 锁死），近战会变成纯摆设。
+ *
+ * 取 2.6 的依据：近战必须站进敌人接触范围内输出（持续吃接触伤害），
+ * 用射程换输出，所以它的 DPS 应当**略高于**手感基准「脉冲手枪」(≈112)。
+ * 乘完之后四把的相对强弱与设定表完全一致，本系数只影响整体强弱、不影响排序。
+ */
+export const MELEE_DAMAGE_SCALE = 2.6;
+
+/** 近战伤害：设定表数值 → 本作生效值。 */
+function meleeDmg(tableValue: number): number {
+  return dmg(tableValue * MELEE_DAMAGE_SCALE);
 }
 
 export interface WeaponDef {
@@ -45,6 +70,12 @@ export interface WeaponDef {
   pierce: number;
   bounce: number;
   knockback: number;
+  /**
+   * 近战专用：挥砍扇形的**总张角**（弧度）。`kind: 'melee'` 时生效 ——
+   * 落在「瞄准方向 ± swingArc/2」、距离 ≤ `range` 范围内的敌人全部命中。
+   * 长枪这种「直线突刺」把它压窄（≈0.45），木棍 / 咸鱼这种横扫就放大。
+   */
+  swingArc?: number;
   /** 激光：每秒伤害 / 光束宽度 */
   beamDps?: number;
   beamWidth?: number;
@@ -58,6 +89,15 @@ export interface WeaponDef {
   projectileRadius: number;
   shape: ProjectileShape;
   muzzleScale: number;
+  /**
+   * 武器从握把到末端的**可视长度**（`drawWeaponShape` 的局部坐标单位）。
+   *
+   * 只用于**图鉴 / HUD 图标居中**：原来的 8 把枪械长度都在 40 上下，
+   * 图标里统一 `translate(-16, 0)` 就能摆正；长枪有 84 长，照枪械的口径画会整根戳出图标框，
+   * 所以配了本字段的武器会改成"按实际长度缩放到图标框内并居中"。
+   * 不配（`undefined`）就沿用原来的画法，保证既有武器图标外观不变。
+   */
+  heldLength?: number;
   shakeAmount: number;
   sound: WeaponSound;
   colors: { core: string; glow: string; trail: string };
@@ -302,6 +342,135 @@ export const WEAPONS: WeaponDef[] = [
     colors: { core: '#fff0c2', glow: '#ffcf5a', trail: '#ff7a2f' },
     ammoLabel: '榴弹',
   },
+
+  // ------------------------------------------------------------ 近战武器（需求 21）
+  // 数值口径：伤害值取自 weapon/weapon.png 设定表，经 `meleeDmg()` 换算（见上方系数说明）；
+  // 「攻击速度（次/秒）」直接取表内数值。攻击范围（range，像素）与武器造型长度由本项目设定 ——
+  // 目标是「看得见的刃长 ≈ 打得到的距离」。近战统一 `auto: true`：按住左键按固定节奏连续挥砍。
+  {
+    id: 'salted_fish',
+    name: '咸鱼',
+    kind: 'melee',
+    tier: 1,
+    desc: '「看起来很咸，但打人真的很痛！」一条看似普通的咸鱼，没想到在关键时刻能掏出惊人的伤害。',
+    damage: meleeDmg(25),
+    fireRate: 1.2,
+    bulletSpeed: 0,
+    spread: 0,
+    pellets: 1,
+    range: 62,
+    mag: 1,
+    reloadTime: 0,
+    recoil: 0.2,
+    pierce: 0,
+    bounce: 0,
+    knockback: 70,
+    swingArc: 1.55,
+    auto: true,
+    moveSpeedMul: 1,
+    crit: 0.05,
+    projectileRadius: 0,
+    shape: 'blade',
+    muzzleScale: 1,
+    heldLength: 50,
+    shakeAmount: 0.045,
+    sound: 'melee',
+    colors: { core: '#ffffff', glow: '#bfe6ff', trail: '#7fc8ef' },
+    ammoLabel: '近战',
+  },
+  {
+    id: 'spiked_mace',
+    name: '狼牙棒',
+    kind: 'melee',
+    tier: 2,
+    desc: '「简单粗暴，一棒解决！」布满尖刺的重型武器，每一次挥动都能带来毁灭性的打击。',
+    damage: meleeDmg(40),
+    fireRate: 0.8,
+    bulletSpeed: 0,
+    spread: 0,
+    pellets: 1,
+    range: 68,
+    mag: 1,
+    reloadTime: 0,
+    recoil: 0.34,
+    pierce: 0,
+    bounce: 0,
+    knockback: 260,
+    swingArc: 1.3,
+    auto: true,
+    moveSpeedMul: 0.9,
+    crit: 0.07,
+    projectileRadius: 0,
+    shape: 'blade',
+    muzzleScale: 1,
+    heldLength: 48,
+    shakeAmount: 0.14,
+    sound: 'melee',
+    colors: { core: '#ffe6c2', glow: '#ffb15a', trail: '#c9762f' },
+    ammoLabel: '近战',
+  },
+  {
+    id: 'wood_stick',
+    name: '木棍',
+    kind: 'melee',
+    tier: 1,
+    desc: '「朴实无华，但足够可靠。」一根结实的木棍，陪伴了无数冒险者走过最初的旅程。',
+    damage: meleeDmg(20),
+    fireRate: 1.5,
+    bulletSpeed: 0,
+    spread: 0,
+    pellets: 1,
+    range: 60,
+    mag: 1,
+    reloadTime: 0,
+    recoil: 0.18,
+    pierce: 0,
+    bounce: 0,
+    knockback: 60,
+    swingArc: 1.45,
+    auto: true,
+    moveSpeedMul: 1.02,
+    crit: 0.05,
+    projectileRadius: 0,
+    shape: 'blade',
+    muzzleScale: 1,
+    heldLength: 58,
+    shakeAmount: 0.035,
+    sound: 'melee',
+    colors: { core: '#ffeacb', glow: '#d9a86a', trail: '#a3763f' },
+    ammoLabel: '近战',
+  },
+  {
+    id: 'long_spear',
+    name: '长枪',
+    kind: 'melee',
+    tier: 3,
+    desc: '「一往无前，贯穿一切！」锋利的枪刃，象征着勇气与力量，能在战场上贯穿一切阻碍。',
+    damage: meleeDmg(35),
+    fireRate: 1,
+    bulletSpeed: 0,
+    spread: 0,
+    pellets: 1,
+    range: 108,
+    mag: 1,
+    reloadTime: 0,
+    recoil: 0.26,
+    pierce: 1,
+    bounce: 0,
+    knockback: 150,
+    swingArc: 0.42,
+    auto: true,
+    moveSpeedMul: 0.94,
+    crit: 0.08,
+    projectileRadius: 0,
+    shape: 'blade',
+    muzzleScale: 1,
+    heldLength: 96,
+    shakeAmount: 0.08,
+    sound: 'melee',
+    colors: { core: '#ffffff', glow: '#9fd8ff', trail: '#4f8ff0' },
+    ammoLabel: '近战',
+  },
 ];
 
 export function getWeaponDef(id: string): WeaponDef {
@@ -320,13 +489,21 @@ export function rollWeaponId(rngPick: (weights: number[]) => number, exclude: re
   return list[rngPick(weights)]!.id;
 }
 
+/**
+ * 近战武器「攻击范围」条的分母参考值 —— 取本作最长的一把（长枪 108）再留一点余量。
+ * 远程武器用 900 当分母，近战的最远距离只有 100 出头，共用分母会让三条属性条全部贴地，
+ * 看不出 咸鱼 / 狼牙棒 / 长枪 之间的差别。
+ */
+export const MELEE_RANGE_REF = 120;
+
 /** 供 UI 展示的武器简评（三条属性条）。基准值随 WEAPON_DAMAGE_MUL 同步缩放，保证条长口径不变。 */
 export function weaponStatBars(def: WeaponDef): { label: string; value: number }[] {
   const dps = def.kind === 'beam' ? (def.beamDps ?? 0) : def.damage * def.fireRate * def.pellets;
   const dpsRef = 160 * WEAPON_DAMAGE_MUL;
+  const melee = def.kind === 'melee';
   return [
     { label: '伤害', value: Math.min(1, dps / dpsRef) },
-    { label: '射速', value: Math.min(1, def.fireRate / 22) },
-    { label: '射程', value: Math.min(1, def.range / 900) },
+    { label: melee ? '攻速' : '射速', value: Math.min(1, def.fireRate / 22) },
+    { label: melee ? '攻击范围' : '射程', value: Math.min(1, def.range / (melee ? MELEE_RANGE_REF : 900)) },
   ];
 }

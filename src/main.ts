@@ -19,7 +19,9 @@ import { GameplayScene, type GameHost } from './scenes/gameplay';
 import { NetClient } from './net/NetClient';
 import type { NetMode, PeerInfo } from './net/protocol';
 import {
+  CODEX_PAGE_SIZE,
   buildMenuButtons,
+  codexListLength,
   createLobbyInfo,
   createMenuState,
   drawMenu,
@@ -253,6 +255,16 @@ class App implements GameHost {
     if (id.startsWith('codex-tab-')) {
       st.codexTab = id.slice('codex-tab-'.length) as CodexTab;
       st.codexIndex = 0;
+      st.codexPage = 0;
+      return;
+    }
+    // 图鉴翻页：选中项跟着跳到该页第一条，保证右侧详情和左侧列表永远对得上。
+    if (id === 'codex-page-prev' || id === 'codex-page-next') {
+      const total = codexListLength(st.codexTab);
+      const pages = Math.max(1, Math.ceil(total / CODEX_PAGE_SIZE));
+      const page = clamp(st.codexPage + (id === 'codex-page-prev' ? -1 : 1), 0, pages - 1);
+      st.codexPage = page;
+      st.codexIndex = clamp(page * CODEX_PAGE_SIZE, 0, Math.max(0, total - 1));
       return;
     }
     if (id.startsWith('save-continue:')) {
@@ -330,6 +342,7 @@ class App implements GameHost {
         st.previous = 'main';
         st.mode = 'codex';
         st.codexIndex = 0;
+        st.codexPage = 0;
         break;
       case 'saves':
         st.previous = 'main';
@@ -492,6 +505,16 @@ class App implements GameHost {
     for (const c of CHARACTERS) {
       if (isCharacterUnlocked(c, progress)) this.save.unlockCharacter(c.id);
     }
+  }
+
+  /**
+   * 暂停菜单的「保存并返回大厅」：退场但**不作废存档**。
+   *
+   * 和 `abandonRun` 的区别就在这里 —— 玩家想"今天先玩到这"时该走这条，
+   * 下次进主菜单还能从「继续远征 / 存档管理」回到这一层。
+   */
+  exitToLobby(): void {
+    this.returnToMenu();
   }
 
   private returnToMenu(): void {

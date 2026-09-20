@@ -95,6 +95,22 @@ export const BOSS_SPRITE_SCALE = 2.6;
 /** 楼层数量：打完最后一层 Boss 即通关结算。每层 Boss 各不相同（见 src/data/bosses.ts）。 */
 export const FLOOR_COUNT = 3;
 
+/**
+ * 楼层强度递增倍率：**每一层的血量与攻击力都是上一层的 1.5 倍**。
+ *
+ * 第 N 层的系数 = `1.5^(N-1)`，也就是 1 / 1.5 / 2.25。
+ * 普通敌人（`enemies.ts` 的 `enemyScale`）与 Boss（`bosses.ts` 的 `bossMaxHp` /
+ * `bossContactDamage`）**共用这一个系数** —— 放在这里就是为了让「小怪变强多少」
+ * 和「Boss 变强多少」永远同步，不会各调各的调出不同的曲线。
+ */
+export const FLOOR_POWER_STEP = 1.5;
+
+/** 第 `floor` 层的强度系数。第 1 层恒为 1（基准层）；非法楼层按 1 处理。 */
+export function floorPower(floor: number): number {
+  const f = Math.floor(floor);
+  return FLOOR_POWER_STEP ** (Number.isFinite(f) && f > 1 ? f - 1 : 0);
+}
+
 /** 拾取物吸附。 */
 export const PICKUP_MAGNET_RANGE = 108;
 export const PICKUP_RANGE = 34;

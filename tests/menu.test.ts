@@ -20,13 +20,16 @@
  */
 import { describe, expect, test } from 'vitest';
 import {
+  CODEX_PAGE_SIZE,
   buildMenuButtons,
   createMenuState,
   drawMenu,
+  type CodexTab,
   type MenuData,
   type MenuState,
   type SaveSlotInfo,
 } from '../src/ui/screens';
+import { WEAPONS } from '../src/data/weapons';
 import { CHARACTERS } from '../src/data/characters';
 import { BOSSES } from '../src/data/bosses';
 import { hitTest } from '../src/ui/widgets';
@@ -682,5 +685,125 @@ describe('存档管理页（需求 20）', () => {
     expect(empty.label).toBe('存档管理');
     expect(buildMenuButtons(savesState()).find((b) => b.id === 'clear-all-runs')!.enabled).toBe(false);
     expect(buildMenuButtons(savesState(), SAVES).find((b) => b.id === 'clear-all-runs')!.enabled).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------------ 图鉴分页（需求 21）
+
+/**
+ * 需求 21 往武器表里加了 4 把近战武器，条目数 8 → 12。
+ *
+ * 图鉴左列表原本是按 `160 + i * 58` 一路铺下去的：第 8 行（y=566..616）正好卡在
+ * 底部「返回大厅」按钮（y=644）上方，所以** 8 条以内是设计好的**；12 条时会压到返回按钮、
+ * 第 12 行（y=798）直接跑出 720 高的画面。因此加了 CODEX_PAGE_SIZE = 8 的分页。
+ *
+ * 这一组用例锁死：每页行数、行落在安全区间、翻页按钮的可用状态、以及翻页后
+ * **只注册本页可点的行**（否则会出现"点到了看不见的行"）。
+ */
+describe('图鉴分页', () => {
+  /** 底部「返回大厅」按钮的上边界。任何列表行都不能越过它。 */
+  const BACK_BTN_Y = 644;
+
+  function codexState(tab: CodexTab, page = 0): MenuState {
+    const st = createMenuState();
+    st.mode = 'codex';
+    st.codexTab = tab;
+    st.codexIndex = 0;
+    st.codexPage = page;
+    return st;
+  }
+
+  test('武器 12 条 → 分 2 页，第一页注册 8 行且全部落在返回按钮上方', () => {
+    expect(WEAPONS.length).toBeGreaterThan(CODEX_PAGE_SIZE);
+    const btns = buildMenuButtons(codexState('weapon'), []);
+    const rows = btns.filter((b) => b.id.startsWith('codex:'));
+    expect(rows.length).toBe(CODEX_PAGE_SIZE);
+    expect(rows.map((b) => b.id)).toEqual(
+      Array.from({ length: CODEX_PAGE_SIZE }, (_, i) => `codex:${i}`),
+    );
+    for (const r of rows) {
+      expect(r.y + r.h).toBeLessThanOrEqual(BACK_BTN_Y);
+      expect(r.y + r.h).toBeLessThanOrEqual(720);
+    }
+    // 行序号必须连续下排（不能被分页打乱成两段）
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i]!.y - rows[i - 1]!.y).toBe(58);
+    }
+  });
+
+  test('第二页只注册剩下的行，且位置回到第一页的行区间（不会跑到画面外）', () => {
+    const st = codexState('weapon', 1);
+    const rows = buildMenuButtons(st, []).filter((b) => b.id.startsWith('codex:'));
+    expect(rows.map((b) => b.id)).toEqual(
+      Array.from({ length: WEAPONS.length - CODEX_PAGE_SIZE }, (_, i) => `codex:${CODEX_PAGE_SIZE + i}`),
+    );
+    // 第二页第一行必须回到 y=160（和第一页首行同一位置），而不是继续往下堆
+    expect(rows[0]!.y).toBe(160);
+    for (const r of rows) expect(r.y + r.h).toBeLessThanOrEqual(BACK_BTN_Y);
+  });
+
+  test('翻页按钮：第一页「上一页」禁用、「下一页」可用；第二页反之', () => {
+    const p0 = buildMenuButtons(codexState('weapon', 0), []);
+    expect(p0.find((b) => b.id === 'codex-page-prev')!.enabled).toBe(false);
+    expect(p0.find((b) => b.id === 'codex-page-next')!.enabled).toBe(true);
+
+    const p1 = buildMenuButtons(codexState('weapon', 1), []);
+    expect(p1.find((b) => b.id === 'codex-page-prev')!.enabled).toBe(true);
+    expect(p1.find((b) => b.id === 'codex-page-next')!.enabled).toBe(false);
+  });
+
+  test('单页分页（敌人 8 条 / 角色 7 条 / Boss 3 条）不出现翻页按钮', () => {
+    for (const tab of ['enemy', 'character', 'boss'] as const) {
+      const ids = buildMenuButtons(codexState(tab), []).map((b) => b.id);
+      expect(ids).not.toContain('codex-page-prev');
+      expect(ids).not.toContain('codex-page-next');
+    }
+  });
+
+  test('越界页码被夹回合法范围（不靠调用方保证）', () => {
+    const over = buildMenuButtons(codexState('weapon', 99), []).filter((b) => b.id.startsWith('codex:'));
+    // 99 页不存在 → 夹到最后一页（第 2 页），于是注册的是最后 4 条
+    expect(over.length).toBe(WEAPONS.length - CODEX_PAGE_SIZE);
+    expect(over[0]!.id).toBe(`codex:${CODEX_PAGE_SIZE}`);
+
+    const under = buildMenuButtons(codexState('weapon', -5), []).filter((b) => b.id.startsWith('codex:'));
+    expect(under[0]!.id).toBe('codex:0');
+  });
+
+  test('翻页指示文案真的被画出来（不是只注册了按钮）', () => {
+    const joined = render(codexState('weapon', 0))
+      .map((t) => t.text)
+      .join('|');
+    expect(joined).toContain(`第 1 / 2 页 · 共 ${WEAPONS.length} 条`);
+
+    const joined2 = render(codexState('weapon', 1))
+      .map((t) => t.text)
+      .join('|');
+    expect(joined2).toContain(`第 2 / 2 页 · 共 ${WEAPONS.length} 条`);
+  });
+
+  test('翻页后翻页按钮自己可点（hitTest 命中它们）', () => {
+    const st = codexState('weapon', 0);
+    const btns = buildMenuButtons(st, []);
+    const next = btns.find((b) => b.id === 'codex-page-next')!;
+    expect(hitTest(btns, next.x + next.w / 2, next.y + next.h / 2)?.id).toBe('codex-page-next');
+    const prev = btns.find((b) => b.id === 'codex-page-prev')!;
+    // 禁用的按钮必须点不到（否则会在第 1 页"往前翻"）
+    expect(hitTest(btns, prev.x + prev.w / 2, prev.y + prev.h / 2)).toBe(null);
+  });
+
+  test('武器副标题显示的是中文形态名，内部 kind 字符串不会漏进界面', () => {
+    // 需求 21 加了 kind: 'melee' 之后，kindLabel() 少一个 case 就会把 "melee" 直接
+    // 印在图鉴列表副标题上（"层级 1 · melee"）—— 这类漏网只能靠"渲染出来看看"抓到。
+    const st = codexState('weapon', 1);
+    const { ctx, texts } = recordingCtx();
+    const data: MenuData = { ...menuData(), discoveredWeapons: WEAPONS.map((w) => w.id) };
+    drawMenu(ctx, st, buildMenuButtons(st, []), null, 0.5, data);
+    const joined = texts.map((t) => t.text).join('|');
+    for (const raw of ['melee', 'bullet', 'beam', 'flame', 'grenade']) {
+      expect(joined).not.toContain(raw);
+    }
+    // 四把近战都在第二页，副标题必须是中文「近战」
+    expect(joined).toContain('近战');
   });
 });

@@ -73,7 +73,7 @@ import {
   type OverlayState,
   type ShopItem,
 } from '../ui/overlays';
-import { hitTest, type UiButton } from '../ui/widgets';
+import { formatTime, hitTest, type UiButton } from '../ui/widgets';
 
 export interface GameHost {
   renderer: WorldRenderer;
@@ -83,6 +83,13 @@ export interface GameHost {
   bus: EventBus;
   endRun(result: RunResult): void;
   abandonRun(): void;
+  /**
+   * 暂停菜单的「保存并返回大厅」：只退场，**不动存档**。
+   *
+   * 与 `abandonRun` 的区别是全部意义所在 —— 后者会把该角色的存档删掉。
+   * 可选：无头测试用的宿主可以不实现，此时该按钮退化为只保存不退出。
+   */
+  exitToLobby?(): void;
   /** 联机对局结束/掉线后，由场景回调让宿主收尾（关闭连接、回大厅）。 */
   leaveNet?(reason: string): void;
 }
@@ -285,6 +292,16 @@ export class GameplayScene {
     return this.overlay.mode;
   }
 
+  /**
+   * 当前覆盖层的按钮 id（自动化测试用）。
+   *
+   * 光有 `overlayMode` 不够：暂停面板的「保存进度 / 保存并返回大厅 / 放弃远征」
+   * 都是同一个 mode 下的不同按钮，测试要能分辨面板上到底挂了哪几个出口。
+   */
+  get overlayButtonIds(): string[] {
+    return this.overlayButtons.map((b) => b.id);
+  }
+
   /** 当前房间是否已经有可用的传送门。 */
   get portalReady(): boolean {
     return this.currentPickups.some((p) => p.kind === 'portal' && !p.collected);
@@ -349,11 +366,31 @@ export class GameplayScene {
   /**
    * 把当前远征进度写进 localStorage（**只有单机存**：
    * 联机局的进度属于房间，存档会误导玩家以为能续玩）。
-   * 触发点：进入新房间、定时心跳、打开暂停菜单。
+   * 触发点：进入新房间、定时心跳、打开暂停菜单、暂停菜单里的「保存进度」。
+   *
+   * 返回是否真的写了盘 —— 调用方（暂停面板那行状态字）要如实告诉玩家，
+   * 不能出现"显示已保存、其实联机局没存"这种骗人的反馈。
    */
-  private persistRun(): void {
-    if (this.isMultiplayer() || this.ended || this.run.player.dead) return;
+  private persistRun(): boolean {
+    if (this.isMultiplayer() || this.ended || this.run.player.dead) return false;
     this.host.save.setRun(this.run.snapshotRun(this.collectRoomFlags()));
+    return true;
+  }
+
+  /**
+   * 存档 + 刷新暂停面板上的「已保存 · 第 N 层 · …」那行字。
+   *
+   * 存档是全自动的（进房间 / 每 4 秒 / 按 Esc 都会落盘），但玩家看不见就等于没有。
+   * 所以每次打开暂停菜单、每次点「保存进度」，都用**真实的落盘结果**回填这一行。
+   */
+  private saveWithNotice(): boolean {
+    const ok = this.persistRun();
+    if (ok) {
+      this.overlay.saveNotice = `已保存 · 第 ${this.run.floor} 层 · ${formatTime(this.run.timeSec)} · 击杀 ${this.run.stats.kills} · 金币 ${this.run.gold}`;
+    } else {
+      this.overlay.saveNotice = this.isMultiplayer() ? '联机局的进度由房间持有，不写入本地存档' : '当前状态无法保存';
+    }
+    return ok;
   }
 
   /** 收集各房间的交互标志（宝箱已开 / 事件已触发 / 补给站已弹过），供存档使用。 */
@@ -602,6 +639,8 @@ export class GameplayScene {
     if (this.mode === 'overlay') {
       this.particles.update(dtRaw * 0.35);
       this.numbers.update(dtRaw);
+      // 覆盖层里的 Esc 交给统一入口（否则真机上按 Esc 关不掉暂停面板）
+      if (this.host.input.wasPressed('Escape')) this.handleEscape();
       this.updateOverlayInput();
       return;
     }
@@ -704,8 +743,9 @@ export class GameplayScene {
     const input = this.host.input;
     const player = this.run.player;
     if (input.wasPressed('Escape')) {
-      // 暂停前先落一次盘：不少人是在暂停界面里直接关掉页面的
-      this.persistRun();
+      // 暂停前先落一次盘（不少人是在暂停界面里直接关掉页面的），
+      // 并把这一次落盘的结果写进面板 —— 玩家按 Esc 就能看见"存了"。
+      this.saveWithNotice();
       this.openOverlay('pause');
       return;
     }
@@ -1514,6 +1554,8 @@ export class GameplayScene {
   private openOverlay(mode: OverlayState['mode']): void {
     if (this.overlay.mode !== 'settings') this.overlay.previousMode = this.overlay.mode;
     this.overlay.mode = mode;
+    // 打开暂停面板一定是干净状态：上次留下的「确认放弃」不能带进来
+    if (mode === 'pause') this.overlay.confirmAbandon = false;
     this.mode = 'overlay';
     this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
   }
@@ -1849,6 +1891,20 @@ export class GameplayScene {
       case 'resume':
         this.closeOverlay();
         break;
+      case 'save': {
+        // 手动存档：落盘 + 把结果写回面板那行状态字 + 给一声确认音
+        const ok = this.saveWithNotice();
+        this.host.audio.play(ok ? 'save' : 'error', 0.7);
+        this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
+        break;
+      }
+      case 'save-exit':
+        // 存好再退场：这条路径**不删档**，下次进主菜单可以从「继续远征」回来
+        this.saveWithNotice();
+        this.closeOverlay();
+        if (this.host.exitToLobby) this.host.exitToLobby();
+        else this.host.audio.play('save', 0.7);
+        break;
       case 'settings':
         this.overlay.previousMode = this.overlay.mode;
         this.overlay.mode = 'settings';
@@ -1859,6 +1915,18 @@ export class GameplayScene {
         this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
         break;
       case 'abandon':
+        // 不直接删档：先把面板切成「确认放弃 / 取消」，
+        // 免得「放弃远征」被当成"退出到大厅"，一点就把几十分钟的进度清掉。
+        this.overlay.confirmAbandon = true;
+        this.host.audio.play('error', 0.5);
+        this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
+        break;
+      case 'abandon-cancel':
+        this.overlay.confirmAbandon = false;
+        this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
+        break;
+      case 'abandon-confirm':
+        this.overlay.confirmAbandon = false;
         this.host.abandonRun();
         break;
       case 'retry':
@@ -2112,22 +2180,48 @@ export class GameplayScene {
   }
 
   handleKey(code: string): void {
+    if (code !== 'Escape') return;
+    this.handleEscape();
+  }
+
+  /**
+   * Esc 的统一含义：在游戏里 = 存一次盘并打开暂停面板；
+   * 在覆盖层里 = 「返回上一层」（设置→暂停，暂停/补给站→关闭）。
+   *
+   * 生产环境由 `update()` 的覆盖层分支轮询触发；`handleKey` 只是同一条逻辑的
+   * 直接投喂入口（无头测试用）。两者必须共用这一个函数，否则「测试里 Esc 能关面板、
+   * 真机上按 Esc 没反应」这种偏差会一直藏在测试的绿色里。
+   */
+  private handleEscape(): void {
     if (this.mode !== 'overlay') {
-      if (code === 'Escape' && this.mode === 'play') this.openOverlay('pause');
+      if (this.mode === 'play') {
+        this.saveWithNotice();
+        this.openOverlay('pause');
+      }
       return;
     }
-    if (code !== 'Escape') return;
-    if (this.overlay.mode === 'settings') {
-      this.overlay.mode = this.overlay.previousMode === 'settings' ? 'pause' : this.overlay.previousMode;
-      this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
-    } else if (this.overlay.mode === 'pause') {
-      this.closeOverlay();
-    } else if (this.overlay.mode === 'preboss') {
-      // Esc 等同于点「再准备一下」：只关面板、**不开打**。
-      // 玩家已经站在首领房门口（门是锁的），所以这里不能顺手把首领叫醒 ——
-      // 那会让"我只是想关掉面板"变成"被迫开战"。
-      this.closeOverlay();
+    switch (this.overlay.mode) {
+      case 'settings':
+        this.overlay.mode = this.overlay.previousMode === 'settings' ? 'pause' : this.overlay.previousMode;
+        break;
+      case 'pause':
+        // 二次确认态下 Esc = 取消，而不是把面板一起关掉
+        if (this.overlay.confirmAbandon) this.overlay.confirmAbandon = false;
+        else {
+          this.closeOverlay();
+          return;
+        }
+        break;
+      case 'preboss':
+        // Esc 等同于点「再准备一下」：只关面板、**不开打**。
+        // 玩家已经站在首领房门口（门是锁的），所以这里不能顺手把首领叫醒 ——
+        // 那会让"我只是想关掉面板"变成"被迫开战"。
+        this.closeOverlay();
+        return;
+      default:
+        return;
     }
+    this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
   }
 
   // ------------------------------------------------------------- 联机

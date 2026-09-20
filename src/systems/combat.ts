@@ -16,7 +16,7 @@ export interface DamageContext {
   audio: AudioSystem;
 }
 
-export type DamageSource = 'bullet' | 'explosion' | 'contact' | 'burn' | 'thorns' | 'beam';
+export type DamageSource = 'bullet' | 'explosion' | 'contact' | 'burn' | 'thorns' | 'beam' | 'melee';
 
 export interface HitOptions {
   crit: boolean;

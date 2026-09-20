@@ -3,7 +3,7 @@
  * 统一风格原则：暗底 + 厚描边 + 顶部高光 + 侧向轮廓光 + 地面投影，
  * 保证角色、怪物、建筑、道具看起来属于同一个世界。
  */
-import { TAU, clamp, lerp } from '../core/math';
+import { TAU, clamp, easeOutCubic, lerp } from '../core/math';
 import { PLAYER_RADIUS, PLAYER_SPRITE_H } from '../data/config';
 import type { CharacterDef, CharacterPalette } from '../data/characters';
 import type { BossDef } from '../data/bosses';
@@ -278,6 +278,188 @@ export function drawWeaponShape(
       ctx.fillStyle = tint ?? '#ffffff';
       ctx.fillRect(26, -4, 10, 6);
       break;
+    // ---------------------------------------------------------- 近战武器（需求 21）
+    // 全部沿用"握把在原点、朝 +X 伸展"的同一套约定，所以挥砍动画 / 拾取展示 /
+    // 图鉴图标都不需要为近战写第二套变换。
+    case 'salted_fish': {
+      // 咸鱼：尾鳍就是握把，鱼身朝前 —— 甩起来像一把很敷衍的钝器。
+      // 配色直接用武器自身的 colors（浅蓝鱼身 + 白肚 + 亮鳍）：通用的灰铁色在暗色地板上
+      // 只剩一团影子，而这是唯一一把"一眼要认出是条鱼"的武器。
+      const fishFin = def.colors.glow;
+      // 尾鳍
+      fill(fishFin);
+      ctx.beginPath();
+      ctx.moveTo(4, 0);
+      ctx.lineTo(-11, -9);
+      ctx.lineTo(-6.5, 0);
+      ctx.lineTo(-11, 9);
+      ctx.closePath();
+      ctx.fill();
+      // 鱼身 + 描边（描边负责把它从同色系的地板上拉出来）
+      fill(def.colors.trail);
+      ellipsePath(ctx, 19, 0, 18, 9.2);
+      ctx.fill();
+      ctx.strokeStyle = tint ?? '#16202c';
+      ctx.lineWidth = 1.6;
+      ellipsePath(ctx, 19, 0, 18, 9.2);
+      ctx.stroke();
+      // 白肚
+      fill(def.colors.core);
+      ellipsePath(ctx, 18, 3.4, 13.5, 4);
+      ctx.fill();
+      // 背鳍
+      fill(fishFin);
+      ctx.beginPath();
+      ctx.moveTo(12, -7.6);
+      ctx.lineTo(20, -16);
+      ctx.lineTo(27, -6.8);
+      ctx.closePath();
+      ctx.fill();
+      // 头部 + 眼
+      fill(fishFin);
+      ellipsePath(ctx, 34, -0.6, 5, 6);
+      ctx.fill();
+      ctx.fillStyle = tint ?? '#141b25';
+      ctx.beginPath();
+      ctx.arc(33.5, -2.6, 1.9, 0, TAU);
+      ctx.fill();
+      // 鳃线
+      ctx.strokeStyle = tint ?? '#2a4055';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(28, 0, 7, -1.15, 1.15);
+      ctx.stroke();
+      break;
+    }
+    case 'spiked_mace': {
+      // 狼牙棒：木柄 + 布满尖刺的铁球头，视觉重心全在锤头（因此击退最猛）。
+      fill(tint ?? '#6b4a2a');
+      roundedRectPath(ctx, -5, -4.4, 26, 8.8, 3);
+      ctx.fill();
+      fill(tint ?? '#9a6d3d');
+      roundedRectPath(ctx, -5, -4.4, 26, 3.2, 1.5);
+      ctx.fill();
+      // 缠绳握位
+      fill(accent);
+      for (let i = 0; i < 3; i++) ctx.fillRect(-1 + i * 5.4, -4.4, 2.2, 8.8);
+      // 锤头：暗铁球 + 顶部高光，让后面的亮刺有对比
+      fill(tint ?? '#3b414d');
+      ellipsePath(ctx, 28, 0, 10.5, 10.5);
+      ctx.fill();
+      fill(tint ?? '#6f7787');
+      ellipsePath(ctx, 24.6, -3.4, 4.8, 4.4);
+      ctx.fill();
+      // 尖刺（用武器自身的强调色，暗底上一眼看出是狼牙棒）
+      fill(accent);
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU + 0.22;
+        const bx = 28 + Math.cos(a) * 7.6;
+        const by = Math.sin(a) * 7.6;
+        const tx = 28 + Math.cos(a) * 15.5;
+        const ty = Math.sin(a) * 15.5;
+        const nx = Math.cos(a + Math.PI / 2) * 2.7;
+        const ny = Math.sin(a + Math.PI / 2) * 2.7;
+        ctx.beginPath();
+        ctx.moveTo(bx + nx, by + ny);
+        ctx.lineTo(tx, ty);
+        ctx.lineTo(bx - nx, by - ny);
+        ctx.closePath();
+        ctx.fill();
+      }
+      break;
+    }
+    case 'wood_stick': {
+      // 木棍：最朴素的一根，前端略收细，缠了一小段藤条并带两片叶子。
+      // 木头用暖棕色（不是通用的灰），否则和灰色石板地面糊在一起。
+      fill(tint ?? '#4a3420');
+      roundedRectPath(ctx, -9, -3.6, 20, 7.2, 2.4);
+      ctx.fill();
+      fill(tint ?? '#8a6237');
+      ctx.beginPath();
+      ctx.moveTo(-6, -3.9);
+      ctx.lineTo(43, -2.4);
+      ctx.quadraticCurveTo(49, -1.5, 49, 0);
+      ctx.quadraticCurveTo(49, 1.5, 43, 2.4);
+      ctx.lineTo(-6, 3.9);
+      ctx.closePath();
+      ctx.fill();
+      fill(tint ?? '#b98a4e');
+      ctx.beginPath();
+      ctx.moveTo(-6, -3.2);
+      ctx.lineTo(43, -2.1);
+      ctx.lineTo(43, -0.4);
+      ctx.lineTo(-6, -0.9);
+      ctx.closePath();
+      ctx.fill();
+      // 木纹
+      ctx.strokeStyle = tint ?? '#5c4026';
+      ctx.lineWidth = 0.9;
+      for (const oy of [1, 2.4]) {
+        ctx.beginPath();
+        ctx.moveTo(2, oy);
+        ctx.lineTo(40, oy * 0.6);
+        ctx.stroke();
+      }
+      // 藤条 + 叶
+      fill(tint ?? '#6f8f3a');
+      ctx.fillRect(6, -5, 12, 2);
+      fill(tint ?? '#7fbf46');
+      ellipsePath(ctx, 30, -6.6, 5.4, 2.4, -0.6);
+      ctx.fill();
+      ellipsePath(ctx, 37.5, -9.2, 4.6, 2.1, -0.35);
+      ctx.fill();
+      break;
+    }
+    case 'long_spear': {
+      // 长枪：全场最长的一把，护环之后是叶形枪刃，柄上挂一面旗（史诗感来源）。
+      // 旗先画，压在枪杆下面。
+      fill(accent);
+      ctx.globalAlpha = tint ? 1 : 0.9;
+      ctx.beginPath();
+      ctx.moveTo(50, -3.2);
+      ctx.quadraticCurveTo(26, -16, 4, -9.4);
+      ctx.quadraticCurveTo(24, -5.4, 50, 2.4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      // 枪杆
+      fill(dark);
+      roundedRectPath(ctx, -12, -2.8, 66, 5.6, 2.4);
+      ctx.fill();
+      fill(metalLight);
+      roundedRectPath(ctx, -12, -2.8, 66, 2.2, 1.1);
+      ctx.fill();
+      // 缠绳握位
+      fill(accent);
+      for (let i = 0; i < 3; i++) ctx.fillRect(-7 + i * 5.5, -3.6, 2.2, 7.2);
+      // 护环
+      fill(metal);
+      roundedRectPath(ctx, 49, -4.6, 7, 9.2, 2.4);
+      ctx.fill();
+      // 枪刃
+      fill(metalLight);
+      ctx.beginPath();
+      ctx.moveTo(56, -5);
+      ctx.quadraticCurveTo(72, -7, 84, 0);
+      ctx.quadraticCurveTo(72, 7, 56, 5);
+      ctx.closePath();
+      ctx.fill();
+      fill(metal);
+      ctx.beginPath();
+      ctx.moveTo(58, -3.2);
+      ctx.quadraticCurveTo(70, -4.4, 79, 0);
+      ctx.quadraticCurveTo(70, 0.6, 58, 1.2);
+      ctx.closePath();
+      ctx.fill();
+      // 血槽
+      ctx.strokeStyle = tint ?? dark;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(58, 0);
+      ctx.lineTo(80, 0);
+      ctx.stroke();
+      break;
+    }
     default:
       fill(metal);
       roundedRectPath(ctx, -2, -6, 26, 10, 3);
@@ -285,6 +467,100 @@ export function drawWeaponShape(
       break;
   }
   void stroke;
+  ctx.restore();
+}
+
+// -------------------------------------------------------------- 近战挥砍姿态
+
+/**
+ * 近战武器的持械姿态（需求 21）。
+ *
+ * - **横扫类**（咸鱼 / 狼牙棒 / 木棍）：绕手部旋转，从「抬到身后」扫到「收在身前」。
+ * - **突刺类**（`swingArc` 很窄的长枪）：不旋转，而是沿瞄准方向先回撤蓄力、再猛地前推。
+ *
+ * 判定依据是数据里的 `swingArc` —— 想把某把武器改成突刺，把它的张角压窄即可，
+ * 渲染这边不需要再加特例。
+ */
+function meleeWeaponPose(player: Player): { rotate: number; push: number } {
+  const p = player.meleeSwingProgress;
+  if (p === null) return { rotate: 0, push: 0 };
+  const def = player.currentWeapon.def;
+  if (def.kind !== 'melee') return { rotate: 0, push: 0 };
+  if ((def.swingArc ?? 1.2) < 0.8) {
+    // 突刺：0~0.22 回撤，0.22~0.62 前推到底，之后缓慢收回
+    const back = p < 0.22 ? -0.5 * (p / 0.22) : 0;
+    const out = p <= 0.22 ? 0 : p < 0.62 ? easeOutCubic((p - 0.22) / 0.4) : 1 - (p - 0.62) / 0.38;
+    return { rotate: 0, push: (back + out) * 26 };
+  }
+  return { rotate: lerp(-1.32, 0.92, easeOutCubic(p)), push: 0 };
+}
+
+/**
+ * 把「挥砍姿态」叠到已经 `rotate(aim)` 过的手部坐标系上。
+ * 枪械的 `pose` 恒为零，等于什么都没做 —— 原有 8 把武器的绘制路径完全不变。
+ */
+function applyWeaponPose(ctx: CanvasRenderingContext2D, player: Player): void {
+  const pose = meleeWeaponPose(player);
+  if (pose.push !== 0) ctx.translate(pose.push, 0);
+  if (pose.rotate !== 0) ctx.rotate(pose.rotate);
+}
+
+/**
+ * 近战挥砍的弧光：横扫画一瓣"气浪"扇面 + 一道前缘亮线，突刺画一道向前收窄的尖光。
+ *
+ * 只在挥砍窗口内出现（`meleeSwingProgress === null` 时立刻返回，非近战零开销），
+ * 并用 `lighter` 叠加 —— 目的是让它看起来像光线而不是一块实心色块。
+ * 必须在**玩家已 translate 到原点**、且尚未按朝向旋转的坐标系里调用。
+ */
+function drawMeleeSwingArc(ctx: CanvasRenderingContext2D, player: Player, aim: number): void {
+  const def = player.currentWeapon.def;
+  if (def.kind !== 'melee') return;
+  const p = player.meleeSwingProgress;
+  if (p === null) return;
+
+  const fade = 1 - p;
+  const inner = player.radius * 0.5;
+  const outer = (def.range + player.radius * 0.45) * player.mods.rangeMul;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  if ((def.swingArc ?? 1.2) < 0.8) {
+    const reach = inner + (outer - inner) * easeOutCubic(clamp((p - 0.18) / 0.44, 0, 1));
+    const ex = Math.cos(aim) * reach;
+    const ey = Math.sin(aim) * reach;
+    const g = ctx.createLinearGradient(Math.cos(aim) * inner, Math.sin(aim) * inner, ex, ey);
+    g.addColorStop(0, withAlpha(def.colors.glow, 0));
+    g.addColorStop(0.6, withAlpha(def.colors.glow, 0.3 * fade));
+    g.addColorStop(1, withAlpha(def.colors.core, 0.62 * fade));
+    ctx.strokeStyle = g;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 10 * (0.45 + fade * 0.75);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(aim) * inner, Math.sin(aim) * inner);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+  } else {
+    const half = (def.swingArc ?? 1.2) * 0.5 + 0.2;
+    const a0 = aim - half;
+    const cur = a0 + half * 2 * easeOutCubic(p);
+    const g = ctx.createRadialGradient(0, 0, inner, 0, 0, outer);
+    g.addColorStop(0, withAlpha(def.colors.glow, 0));
+    g.addColorStop(0.5, withAlpha(def.colors.glow, 0.26 * fade));
+    g.addColorStop(1, withAlpha(def.colors.core, 0.08 * fade));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, outer, a0, cur);
+    ctx.arc(0, 0, inner, cur, a0, true);
+    ctx.closePath();
+    ctx.fill();
+    // 前缘亮线：挥到哪儿一目了然
+    ctx.strokeStyle = withAlpha(def.colors.core, 0.8 * fade);
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(cur) * inner, Math.sin(cur) * inner);
+    ctx.lineTo(Math.cos(cur) * outer, Math.sin(cur) * outer);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -335,6 +611,10 @@ export function drawPlayer(
   const bounce = player.moving ? Math.sin(player.walkPhase * 2) * 1.6 : Math.sin(time * 2.4) * 0.8;
   const aim = player.visualAimAngle;
 
+  // 近战挥砍弧光：贴在影子之上、身体之下，看起来就是"从角色身前扫出去的一道光"。
+  // 非近战武器在这里直接返回，等于没有这一段。
+  if (!dead) drawMeleeSwingArc(ctx, player, aim);
+
   // ---------------------------------------------------------------- 立绘分支
   // 配了 `sprite` 的角色（噜噜 / 肥嘟袋鼠）直接画抠好背景的位图。
   // 立绘还没加载完时 `getCharacterSprite` 返回 null → 落到下面的矢量分支，
@@ -375,6 +655,7 @@ export function drawPlayer(
     ctx.save();
     ctx.translate(hx, hy);
     ctx.rotate(aim);
+    applyWeaponPose(ctx, player);
     drawWeaponShape(ctx, player.currentWeapon.def, 0.92, flash ? '#ffffff' : undefined);
     ctx.restore();
 
@@ -498,6 +779,7 @@ export function drawPlayer(
   ctx.save();
   ctx.translate(hx, hy);
   ctx.rotate(aim);
+  applyWeaponPose(ctx, player);
   drawWeaponShape(ctx, player.currentWeapon.def, 0.92, flash ? '#ffffff' : undefined);
   ctx.restore();
 
@@ -1958,6 +2240,9 @@ export function drawPickup(ctx: CanvasRenderingContext2D, p: Pickup, time: numbe
 
 // ------------------------------------------------------------------ UI 图标
 
+/** 图标里武器希望占用的本地长度 —— 和原有 8 把枪械的视觉长度同一个量级。 */
+const ICON_WEAPON_SPAN = 52;
+
 export function drawWeaponIcon(
   ctx: CanvasRenderingContext2D,
   def: WeaponDef,
@@ -1967,9 +2252,18 @@ export function drawWeaponIcon(
 ): void {
   ctx.save();
   ctx.translate(x, y);
-  const s = size / 60;
-  ctx.scale(s, s);
-  ctx.translate(-16, 0);
+  if (def.heldLength === undefined) {
+    // 原有 8 把枪械：长度都在 40 上下，保持历史偏移与缩放，图标外观逐像素不变。
+    const s = size / 60;
+    ctx.scale(s, s);
+    ctx.translate(-16, 0);
+  } else {
+    // 长柄武器（长枪有 84 长）：照枪械口径画会整根戳出图标框，
+    // 所以按实际长度把它缩到框内再居中。近战武器的图标大小因此是统一的。
+    const s = (size / 60) * (ICON_WEAPON_SPAN / def.heldLength);
+    ctx.scale(s, s);
+    ctx.translate(-(def.heldLength * 0.5 - 6), 0);
+  }
   drawWeaponShape(ctx, def, 1.0);
   ctx.restore();
 }
