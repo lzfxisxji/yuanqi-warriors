@@ -340,3 +340,69 @@ describe('近战：弹药与挥砍动画', () => {
     expect(p.meleeSwingProgress).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------- 破坏障碍
+
+describe('近战：可破坏障碍（需求 23）', () => {
+  /** 跑一帧并把 damageObstacles 收到的参数记下来。 */
+  function fireRecording(p: Player, targets: FakeTarget[], firing = true): number[][] {
+    const calls: number[][] = [];
+    const ctx: WeaponFireContext = {
+      player: p,
+      room: {} as Room,
+      ctx: makeDamageCtx(),
+      projectiles: { spawn: () => undefined } as unknown as ProjectileSystem,
+      targets,
+      damageObstacles: (x, y, angle, halfArc, range, damage) => calls.push([x, y, angle, halfArc, range, damage]),
+      dt: 1 / 60,
+      time: 0,
+    };
+    updateWeapon(ctx, firing);
+    return calls;
+  }
+
+  test('挥砍时把扇形参数交给 damageObstacles（与命中敌人的判定同形）', () => {
+    noCrit();
+    const p = meleePlayer('salted_fish');
+    const def = getWeaponDef('salted_fish');
+    const calls = fireRecording(p, []);
+    expect(calls.length).toBe(1);
+    const [x, y, angle, halfArc, range, damage] = calls[0]!;
+    expect(x).toBeCloseTo(p.x, 6);
+    expect(y).toBeCloseTo(p.y, 6);
+    expect(angle).toBeCloseTo(p.aimAngle, 6);
+    expect(halfArc).toBeCloseTo(def.swingArc! * 0.5, 6);
+    expect(range).toBeCloseTo(def.range * p.mods.rangeMul, 6);
+    expect(damage).toBeCloseTo(def.damage * p.mods.damageMul, 6);
+  });
+
+  test('未扣扳机 / 冷却中都不会破坏障碍', () => {
+    noCrit();
+    const p = meleePlayer('spiked_mace'); // fireRate 0.8 → 冷却 1.25s
+    expect(fireRecording(p, [], false).length).toBe(0);
+    expect(fireRecording(p, []).length).toBe(1);
+    expect(fireRecording(p, []).length).toBe(0);
+  });
+
+  test('枪械不触发 damageObstacles（只有近战走扇形破坏）', () => {
+    const p = new Player(getCharacter('wolfshade'));
+    p.weapons = [createWeaponInstance('pulse_pistol', p.mods)];
+    p.weaponIndex = 0;
+    p.aimAngle = 0;
+    let called = 0;
+    const ctx: WeaponFireContext = {
+      player: p,
+      room: {} as Room,
+      ctx: makeDamageCtx(),
+      projectiles: { spawn: () => undefined } as unknown as ProjectileSystem,
+      targets: [],
+      damageObstacles: () => {
+        called += 1;
+      },
+      dt: 1 / 60,
+      time: 0,
+    };
+    updateWeapon(ctx, true);
+    expect(called).toBe(0);
+  });
+});

@@ -18,6 +18,11 @@ export interface WeaponFireContext {
   projectiles: ProjectileSystem;
   /** 所有可被玩家伤害的目标（敌人 + Boss） */
   targets: HitEntity[];
+  /**
+   * 近战扇形砍击时对**可破坏障碍（木箱）**造成伤害；由场景注入，负责破坏表现与掉落。
+   * 参数：玩家坐标、瞄准角、扇形半角(rad)、判定半径(px)、单次伤害。
+   */
+  damageObstacles?: (x: number, y: number, angle: number, halfArc: number, range: number, damage: number) => void;
   dt: number;
   time: number;
 }
@@ -291,6 +296,10 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     ctx.particles.hitSparks(t.x, t.y, baseAngle, def.colors.glow, crit ? 9 : 5, crit ? 1.15 : 0.85);
     hits++;
   }
+
+  // 近战同样能劈开挡路的木箱（需求 23）：扇形内的可破坏障碍一并受击。
+  // 不计入 `hits`，所以"只砍到箱子、没砍到人"时依然走抡空尘效，反馈不会被吞。
+  fire.damageObstacles?.(player.x, player.y, baseAngle, halfArc, range, damage);
 
   // 抡空了也要有反馈：在弧线前端扬一小撮尘，提示"挥过去了但没碰到人"。
   if (hits === 0) {

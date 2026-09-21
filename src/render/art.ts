@@ -1005,6 +1005,44 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: num
     ctx.fill();
     ctx.restore();
   }
+
+  // 妖物血条（需求 23）：小怪与精英统一在头顶显示；精英条更粗、描金边区分。
+  if (!enemy.dead && enemy.spawnTimer <= 0) {
+    drawEnemyHealthBar(ctx, enemy.x, enemy.y, r, clamp(enemy.hp / Math.max(1, enemy.maxHp), 0, 1), def.elite);
+  }
+}
+
+/**
+ * 敌人头顶血条。
+ * 小怪：细红条；精英：更粗 + 金色描边 + 金色血量（和场上的精英光环同色系）。
+ * 位置随 `radius` 上浮，保证不同体型敌人都贴在"头顶"。
+ */
+function drawEnemyHealthBar(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  ratio: number,
+  elite: boolean,
+): void {
+  const w = Math.max(24, r * 2.1);
+  const h = elite ? 5 : 3.5;
+  const left = x - w / 2;
+  const top = y - r * (elite ? 1.95 : 1.7);
+  ctx.save();
+  // 背板
+  ctx.fillStyle = 'rgba(6,8,14,0.72)';
+  ctx.fillRect(left - 1, top - 1, w + 2, h + 2);
+  // 边框
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = elite ? 'rgba(255,206,90,0.9)' : 'rgba(255,255,255,0.28)';
+  ctx.strokeRect(left - 1.5, top - 1.5, w + 3, h + 3);
+  // 血量
+  if (ratio > 0) {
+    ctx.fillStyle = elite ? '#ffce4d' : '#ff5140';
+    ctx.fillRect(left, top, w * ratio, h);
+  }
+  ctx.restore();
 }
 
 type Pal = { body: string; dark: string; accent: string; glow: string };

@@ -4,7 +4,7 @@
  * 主循环顺序：
  *   输入 → 玩家移动/技能 → 武器击发 → 敌人 AI → 弹丸 → 碰撞与结算 → 房间状态机 → 相机 → 渲染
  */
-import { RNG, TAU, clamp, dist, hashString, normalize } from '../core/math';
+import { RNG, TAU, angleDelta, clamp, dist, hashString, normalize } from '../core/math';
 import { EventBus, GameEvents } from '../core/eventbus';
 import type { Input } from '../core/input';
 import type { Dir4, RoomType } from '../core/types';
@@ -677,6 +677,7 @@ export class GameplayScene {
         ctx: this.damageCtx,
         projectiles: this.projectiles,
         targets: this.allTargets(),
+        damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od),
         dt,
         time: this.run.timeSec,
       },
@@ -1466,37 +1467,72 @@ export class GameplayScene {
         const cx = c * TILE + TILE / 2;
         const cy = r * TILE + TILE / 2;
         if (Math.hypot(cx - x, cy - y) > radius + TILE * 0.5) continue;
-        if (room.damageCrate(idx, damage)) {
-          broke = true;
-          this.particles.explosion(cx, cy, 34, '#c8a06a', '#e8c898');
-          for (let i = 0; i < 5; i++) {
-            this.particles.spawn({
-              kind: 'debris',
-              x: cx,
-              y: cy,
-              vx: (Math.random() - 0.5) * 200,
-              vy: (Math.random() - 0.5) * 200,
-              life: 0.6,
-              size: 6,
-              sizeEnd: 2,
-              color: '#7a5836',
-              gravity: 420,
-              spin: 12,
-              drag: 1.4,
-            });
-          }
-          if (this.run.rng.chance(0.45)) {
-            const gold = this.run.addGold(this.run.rng.int(3, 8));
-            if (gold > 0) scatterGold(this.pickups, this.run.rng, cx, cy, gold);
-          }
-        }
+        if (this.breakCrate(idx, cx, cy, damage)) broke = true;
       }
     }
-    if (broke) {
-      this.host.audio.play('enemyDie', 0.4);
-      this.host.renderer.invalidateRoom(room);
-      this.shake.add(0.08);
+    this.finishCrateBreak(room, broke);
+  }
+
+  /**
+   * 近战扇形砍击对**可破坏障碍（木箱）**造成伤害（需求 23）。
+   *
+   * 与爆炸的圆形 `damageEnvironment` 共用 `breakCrate` 的破坏表现，
+   * 判定形状改成"以瞄准方向为中线、半角 `halfArc`、半径 `range` 的扇形"——
+   * 与近战命中敌人用的是同一个扇形，保证"看得见的刃长 ≈ 砍得到的距离"。
+   */
+  damageObstacles(x: number, y: number, angle: number, halfArc: number, range: number, damage: number): void {
+    const room = this.room;
+    let broke = false;
+    // 先复制快照：breakCrate 会从 layout.crates 里移除已碎的木箱，边遍历边改会漏格。
+    for (const idx of room.layout.crates.slice()) {
+      const c = idx % ROOM_COLS;
+      const r = (idx / ROOM_COLS) | 0;
+      const cx = c * TILE + TILE / 2;
+      const cy = r * TILE + TILE / 2;
+      const dx = cx - x;
+      const dy = cy - y;
+      const d = Math.hypot(dx, dy);
+      if (d > range + TILE * 0.7) continue;
+      // 木箱有体积：按尺寸给一点角度宽容，否则擦着边砍不中。
+      if (Math.abs(angleDelta(angle, Math.atan2(dy, dx))) > halfArc + (TILE * 0.5) / Math.max(1, d)) continue;
+      if (this.breakCrate(idx, cx, cy, damage)) broke = true;
     }
+    this.finishCrateBreak(room, broke);
+  }
+
+  /** 木箱破坏的共用表现：爆裂粒子 + 木屑 + 概率掉金币。返回是否真的破坏成功。 */
+  private breakCrate(idx: number, cx: number, cy: number, damage: number): boolean {
+    if (!this.room.damageCrate(idx, damage)) return false;
+    this.particles.explosion(cx, cy, 34, '#c8a06a', '#e8c898');
+    for (let i = 0; i < 5; i++) {
+      this.particles.spawn({
+        kind: 'debris',
+        x: cx,
+        y: cy,
+        vx: (Math.random() - 0.5) * 200,
+        vy: (Math.random() - 0.5) * 200,
+        life: 0.6,
+        size: 6,
+        sizeEnd: 2,
+        color: '#7a5836',
+        gravity: 420,
+        spin: 12,
+        drag: 1.4,
+      });
+    }
+    if (this.run.rng.chance(0.45)) {
+      const gold = this.run.addGold(this.run.rng.int(3, 8));
+      if (gold > 0) scatterGold(this.pickups, this.run.rng, cx, cy, gold);
+    }
+    return true;
+  }
+
+  /** 木箱破坏后的收尾：音效 + 房间贴图失效重绘 + 轻微震动。 */
+  private finishCrateBreak(room: Room, broke: boolean): void {
+    if (!broke) return;
+    this.host.audio.play('enemyDie', 0.4);
+    this.host.renderer.invalidateRoom(room);
+    this.shake.add(0.08);
   }
 
   private updateDynamicLights(): void {
@@ -2329,7 +2365,7 @@ export class GameplayScene {
     if (p.dead) {
       p.updateMovement(dt, { x: 0, y: 0 }, this.room);
       updateWeapon(
-        { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), dt, time: this.run.timeSec },
+        { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od), dt, time: this.run.timeSec },
         false,
       );
       return;
@@ -2347,7 +2383,7 @@ export class GameplayScene {
       if (input.swap === 0 || input.swap === 1) p.swapWeapon(input.swap);
     }
     updateWeapon(
-      { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), dt, time: this.run.timeSec },
+      { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od), dt, time: this.run.timeSec },
       !!input?.fire,
     );
   }
