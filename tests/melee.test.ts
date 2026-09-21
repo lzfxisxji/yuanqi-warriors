@@ -206,9 +206,9 @@ describe('近战：扇形命中判定', () => {
 
   test('超出攻击范围的敌人打不到', () => {
     noCrit();
-    const p = meleePlayer('salted_fish'); // range 62
+    const p = meleePlayer('salted_fish'); // range 92
     const near = makeTarget(50, 0);
-    const far = makeTarget(100, 0);
+    const far = makeTarget(120, 0);
     fire(p, [near, far]);
     expect(near.hits).toBe(1);
     expect(far.hits).toBe(0);

@@ -98,6 +98,8 @@ export interface WeaponDef {
    * 不配（`undefined`）就沿用原来的画法，保证既有武器图标外观不变。
    */
   heldLength?: number;
+  /** 近战武器在手中的额外放大系数，只放大手持可视长度（drawWeaponShape 的 scale），不影响命中范围。 */
+  heldScale?: number;
   shakeAmount: number;
   sound: WeaponSound;
   colors: { core: string; glow: string; trail: string };
@@ -358,7 +360,7 @@ export const WEAPONS: WeaponDef[] = [
     bulletSpeed: 0,
     spread: 0,
     pellets: 1,
-    range: 62,
+    range: 92,
     mag: 1,
     reloadTime: 0,
     recoil: 0.2,
@@ -404,6 +406,7 @@ export const WEAPONS: WeaponDef[] = [
     shape: 'blade',
     muzzleScale: 1,
     heldLength: 48,
+    heldScale: 1.28,
     shakeAmount: 0.14,
     sound: 'melee',
     colors: { core: '#ffe6c2', glow: '#ffb15a', trail: '#c9762f' },

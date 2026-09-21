@@ -780,7 +780,7 @@ export function drawPlayer(
   ctx.translate(hx, hy);
   ctx.rotate(aim);
   applyWeaponPose(ctx, player);
-  drawWeaponShape(ctx, player.currentWeapon.def, 0.92, flash ? '#ffffff' : undefined);
+  drawWeaponShape(ctx, player.currentWeapon.def, 0.92 * (player.currentWeapon.def.heldScale ?? 1), flash ? '#ffffff' : undefined);
   ctx.restore();
 
   // 前臂
@@ -1618,14 +1618,36 @@ export function drawBoss(ctx: CanvasRenderingContext2D, boss: Boss, time: number
     ctx.scale(0.75 + introT * 0.25, 0.75 + introT * 0.25);
   }
 
-  drawShadow(ctx, 0, r * 0.8, r * 1.05, r * 0.42, 0.4);
+  // 行走状态：用实际移动速度判断 Boss 是否在"走路"（而非仅坐标变化）。
+  // 位图 Boss（豆包 / DeepSeek）据此播放像人一样的走路动画：步伐弹跳 + 左右摇摆 + 挤压拉伸。
+  const bossSpeed = Math.hypot(boss.vx, boss.vy);
+  const bossMoving = bossSpeed > 16 && !boss.dead && boss.state !== 'intro';
+  const walkPhase = boss.animTime * 8;
 
-  const bob = Math.sin(time * 2.2) * 4;
+  // 影子随步伐轻微缩放（身体抬起时影子变小）
+  const shadowScale = bossMoving ? 1 - Math.abs(Math.sin(walkPhase)) * 0.12 : 1;
+  drawShadow(ctx, 0, r * 0.8, r * (1.05 * shadowScale), r * (0.42 * shadowScale), 0.4);
+
+  // 上下起伏：静止时缓慢呼吸，移动时叠加"每步一跳"的弹跳
+  let bob = Math.sin(time * 2.2) * 4;
+  if (bossMoving) bob -= Math.abs(Math.sin(walkPhase)) * r * 0.11;
   ctx.translate(0, bob);
 
   const sprite = boss.def.sprite ? getBossSprite(boss.def) : null;
   if (sprite) {
+    // 走路姿态：左右摇摆 + 前倾 + 挤压拉伸（squash & stretch），让静态立绘"走起来"
+    ctx.save();
+    if (bossMoving) {
+      const step = Math.sin(walkPhase);
+      const swayX = Math.sin(walkPhase * 0.5) * r * 0.05;
+      const lean = Math.cos(walkPhase) * 0.07;
+      const squash = 1 - step * 0.06;
+      ctx.translate(swayX, 0);
+      ctx.rotate(lean);
+      ctx.scale(1 / squash, squash);
+    }
     drawBossBitmap(ctx, boss, sprite, r, flash, time);
+    ctx.restore();
   } else {
     drawBossProgrammatic(ctx, boss, r, flash, time);
   }
@@ -2097,7 +2119,7 @@ export function drawPickup(ctx: CanvasRenderingContext2D, p: Pickup, time: numbe
       ctx.save();
       ctx.translate(0, -6 + bob * 0.4);
       ctx.rotate(Math.sin(time * 1.6) * 0.06 - Math.PI * 0.5);
-      if (def) drawWeaponShape(ctx, def, 1.05);
+      if (def) drawWeaponShape(ctx, def, 1.05 * (def.heldScale ?? 1));
       ctx.restore();
       // 提示光柱
       ctx.save();
