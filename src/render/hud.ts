@@ -28,6 +28,13 @@ export interface HudParams {
   /** 是否绘制自绘准星（隐藏系统光标时才画，避免和系统箭头叠加） */
   showCrosshair: boolean;
   fps: number;
+  /**
+   * 训练营（需求 29）。
+   *
+   * 只影响两处：左侧统计里的「第 N / M 层」改成「训练营」，
+   * 以及**不画小地图** —— 训练营只有一间封闭房间，画一张空地图纯属干扰。
+   */
+  training?: boolean;
 }
 
 export function drawHud(ctx: CanvasRenderingContext2D, p: HudParams): void {
@@ -40,7 +47,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, p: HudParams): void {
   drawUpgradeStrip(ctx, p);
   drawWeaponPanel(ctx, p);
   drawSkill(ctx, p);
-  if (p.showMinimap) {
+  if (p.showMinimap && p.training !== true) {
     drawMinimap(ctx, p.plan, p.currentKey, p.discovered, 1260, 18, p.time);
   }
   if (p.boss && !p.boss.dead) drawBossBar(ctx, p.boss, p.time);
@@ -172,9 +179,13 @@ function drawStats(ctx: CanvasRenderingContext2D, p: HudParams): void {
   const x = 24;
   ctx.font = '600 13px "Segoe UI","PingFang SC",sans-serif';
   ctx.textAlign = 'left';
-  // 层数
+  // 层数（训练营没有"第几层"这回事，直接写明场次类型）
   ctx.fillStyle = 'rgba(255,212,121,0.95)';
-  ctx.fillText(`第 ${p.floor} / ${p.floorCount} 层`, x, y);
+  if (p.training === true) {
+    ctx.fillText('训练营', x, y);
+  } else {
+    ctx.fillText(`第 ${p.floor} / ${p.floorCount} 层`, x, y);
+  }
   // 金币
   ctx.fillStyle = 'rgba(255,224,140,0.95)';
   ctx.beginPath();

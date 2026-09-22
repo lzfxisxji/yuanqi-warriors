@@ -8,8 +8,9 @@
 import { EventBus } from './core/eventbus';
 import { Input } from './core/input';
 import { clamp } from './core/math';
-import { DEFAULT_NET_URL, FLOOR_COUNT, PLAYER_COLORS, VIEW_H, VIEW_W } from './data/config';
+import { DEFAULT_NET_URL, FLOOR_COUNT, PLAYER_COLORS, TRAINING_SEED, VIEW_H, VIEW_W } from './data/config';
 import { CHARACTERS, isCharacterUnlocked } from './data/characters';
+import { WEAPONS } from './data/weapons';
 import { WorldRenderer } from './render/renderer';
 import { AudioSystem } from './systems/audio';
 import { SaveManager } from './systems/save';
@@ -291,6 +292,18 @@ class App implements GameHost {
       this.audio.play('click', 0.5);
       return;
     }
+    // 训练营的选择（需求 29）：与远征选角分开记，且**不做任何解锁判断** ——
+    // 「可以使用任何角色和武器」是这一页存在的唯一理由。
+    if (id.startsWith('train-char:')) {
+      st.trainingChar = clamp(Number(id.split(':')[1]) || 0, 0, CHARACTERS.length - 1);
+      this.audio.play('click', 0.5);
+      return;
+    }
+    if (id.startsWith('train-weapon:')) {
+      st.trainingWeapon = clamp(Number(id.split(':')[1]) || 0, 0, WEAPONS.length - 1);
+      this.audio.play('click', 0.5);
+      return;
+    }
     if (id.startsWith('toggle:')) {
       const key = id.split(':')[1] as 'showDamageNumbers' | 'showMinimap' | 'showSystemCursor';
       const settings = { ...this.save.data.settings };
@@ -339,6 +352,13 @@ class App implements GameHost {
       case 'start':
         st.previous = 'main';
         st.mode = 'charselect';
+        break;
+      case 'training':
+        st.previous = 'main';
+        st.mode = 'training';
+        break;
+      case 'train-start':
+        this.startTraining();
         break;
       case 'resume-run':
         this.resumeRun();
@@ -467,6 +487,29 @@ class App implements GameHost {
     this.audio.setMusicIntensity(0);
     this.game?.dispose();
     this.game = new GameplayScene(this, characterId, seed, undefined, resume);
+    this.scene = 'game';
+    this.audio.startMusic();
+    this.audio.play('door', 0.9);
+  }
+
+  /**
+   * 进入训练营（需求 29）。
+   *
+   * 与 `beginRun` 的三点关键差异 —— 这三点决定了训练营"不污染游戏进度"：
+   *  1. **不动存档**：不 `deleteRun` 也不 `setRun`。所以「再来一次远征」时
+   *     之前那份进度还在，训练营也永远不会在「存档管理」里冒出来。
+   *  2. **角色不看解锁**：只在这里被选中，选完也不 `unlockCharacter`
+   *     —— 在训练营里摸到蜂针不该等于"解锁了蜂针"。
+   *  3. **固定种子**：同一个房间布局与木桩位置，可重复练习。
+   */
+  private startTraining(): void {
+    if (this.menuState.lobby.phase === 'room') this.closeLobby();
+    const charDef = CHARACTERS[this.menuState.trainingChar] ?? CHARACTERS[0]!;
+    const weaponDef = WEAPONS[this.menuState.trainingWeapon] ?? WEAPONS[0]!;
+    this.audio.init();
+    this.audio.setMusicIntensity(0);
+    this.game?.dispose();
+    this.game = new GameplayScene(this, charDef.id, TRAINING_SEED, undefined, null, { weaponId: weaponDef.id });
     this.scene = 'game';
     this.audio.startMusic();
     this.audio.play('door', 0.9);

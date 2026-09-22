@@ -116,6 +116,13 @@ export interface OverlayContext {
    * 结算面板要如实告诉玩家「房间没了」，否则他会以为是掉线。
    */
   net?: boolean;
+  /**
+   * 本局是否是训练营（需求 29）。
+   *
+   * 训练营没有存档、没有远征可放弃，所以暂停面板只留「继续训练 / 设置 / 返回大厅」——
+   * 摆出「保存进度 / 放弃远征」只会让玩家担心自己点错删档。
+   */
+  training?: boolean;
 }
 
 export function createOverlayState(): OverlayState {
@@ -157,6 +164,14 @@ export function buildOverlayButtons(overlay: OverlayState, ctx: OverlayContext):
       const gap = 12;
       const startY = 246;
       const row = (i: number) => startY + i * (h + gap);
+      // 训练营（需求 29）：没有存档可存、没有远征可放弃，只留三个出口。
+      // 「返回大厅」复用 `save-exit` 的退场路径 —— 它本来就只退场不动存档。
+      if (ctx.training === true) {
+        buttons.push({ id: 'resume', label: '继续训练', x, y: row(0), w, h });
+        buttons.push({ id: 'settings', label: '设置', x, y: row(1), w, h, style: 'ghost' });
+        buttons.push({ id: 'save-exit', label: '返回大厅', x, y: row(2), w, h, style: 'danger' });
+        break;
+      }
       buttons.push({ id: 'resume', label: '继续游戏', x, y: row(0), w, h });
       buttons.push({ id: 'save', label: '保存进度', x, y: row(1), w, h, style: 'ghost' });
       buttons.push({ id: 'save-exit', label: '保存并返回大厅', x, y: row(2), w, h, style: 'ghost' });
@@ -359,7 +374,7 @@ export function drawOverlay(
 
   switch (overlay.mode) {
     case 'pause':
-      drawPause(ctx2d, overlay, buttons, hoverId, time);
+      drawPause(ctx2d, overlay, buttons, hoverId, time, ctx.training === true);
       break;
     case 'settings':
       drawSettings(ctx2d, buttons, hoverId, time, ctx.settings);
@@ -392,6 +407,7 @@ function drawPause(
   buttons: readonly UiButton[],
   hoverId: string | null,
   time: number,
+  training: boolean,
 ): void {
   if (overlay.confirmAbandon) {
     // 紧凑确认框：只留两个出口 + 把"为什么要确认"说清楚
@@ -405,17 +421,19 @@ function drawPause(
   }
 
   drawPanel(ctx, 380, 118, 520, 484, { radius: 18 });
-  drawHeading(ctx, '已暂停', 640, 166, 34);
+  drawHeading(ctx, training ? '训练营 · 已暂停' : '已暂停', 640, 166, 34);
   drawDivider(ctx, 430, 194, 420);
   for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
   drawHeading(
     ctx,
-    overlay.saveNotice || '进度会自动保存（进新房间 / 每 4 秒 / 按 Esc）',
+    training
+      ? '训练营不会保存进度，也不会记入战绩'
+      : overlay.saveNotice || '进度会自动保存（进新房间 / 每 4 秒 / 按 Esc）',
     640,
     540,
     13,
     'center',
-    overlay.saveNotice ? '#7ef2c0' : 'rgba(206,198,232,0.6)',
+    training || overlay.saveNotice ? '#7ef2c0' : 'rgba(206,198,232,0.6)',
   );
   drawHeading(
     ctx,

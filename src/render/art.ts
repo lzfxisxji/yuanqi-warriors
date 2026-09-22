@@ -952,6 +952,9 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: num
     case 'brute':
       drawBrute(ctx, r, pal, enemy, flash, time);
       break;
+    case 'dummy':
+      drawDummy(ctx, r, pal, enemy, flash, time);
+      break;
   }
   }
   ctx.restore();
@@ -1007,8 +1010,11 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy, time: num
   }
 
   // 妖物血条（需求 23）：小怪与精英统一在头顶显示；精英条更粗、描金边区分。
+  // 训练木桩（需求 29）恒满 + 金边：它不是"快死了"，而是根本打不死。
   if (!enemy.dead && enemy.spawnTimer <= 0) {
-    drawEnemyHealthBar(ctx, enemy.x, enemy.y, r, clamp(enemy.hp / Math.max(1, enemy.maxHp), 0, 1), def.elite);
+    const infinite = def.infiniteHp === true;
+    const ratio = infinite ? 1 : clamp(enemy.hp / Math.max(1, enemy.maxHp), 0, 1);
+    drawEnemyHealthBar(ctx, enemy.x, enemy.y, r, ratio, def.elite || infinite);
   }
 }
 
@@ -1635,6 +1641,95 @@ function drawBrute(
   ctx.stroke();
   ctx.restore();
   ctx.restore();
+}
+
+/**
+ * 训练木桩（需求 29）：一根钉在地上的木人桩。
+ *
+ * 刻意画得"死"一些 —— 没有眼睛、没有兵器、没有前摇光环，只有木纹、缠绳和靶心。
+ * 一眼就能看出它不会动、也不会打人（跟其它敌人形成对比），
+ * 靶心本身则是在说"打这里"。
+ */
+function drawDummy(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  pal: Pal,
+  e: Enemy,
+  flash: boolean,
+  time: number,
+): void {
+  const outline = darken(pal.dark, 0.45);
+
+  // 底座：一小块压在地上的木台，让木桩"站得住"
+  ctx.fillStyle = flash ? '#ffffff' : bodyGradient(ctx, 0, r * 0.86, r * 1.05, r * 0.4, darken(pal.dark, 0.12));
+  ellipsePath(ctx, 0, r * 0.86, r * 1.02, r * 0.36);
+  ctx.fill();
+  ctx.strokeStyle = flash ? '#ffffff' : outline;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  // 立柱
+  ctx.fillStyle = flash ? '#ffffff' : bodyGradient(ctx, 0, -r * 0.1, r * 0.4, r * 1.5, pal.body);
+  roundedRectPath(ctx, -r * 0.34, -r * 1.08, r * 0.68, r * 2.02, r * 0.26);
+  ctx.fill();
+  ctx.strokeStyle = flash ? '#ffffff' : outline;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  // 横臂：木人桩标志性的两条手臂，左右各一
+  for (const s of [-1, 1]) {
+    ctx.fillStyle = flash ? '#ffffff' : bodyGradient(ctx, s * r * 0.7, -r * 0.2, r * 0.9, r * 0.4, pal.accent);
+    roundedRectPath(ctx, s > 0 ? r * 0.2 : -r * 1.04, -r * 0.28, r * 0.84, r * 0.42, r * 0.2);
+    ctx.fill();
+    ctx.strokeStyle = flash ? '#ffffff' : outline;
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  }
+
+  // 缠绳：两道麻绳，把"这是练功道具"这件事说清楚
+  ctx.strokeStyle = flash ? '#ffffff' : withAlpha('#3f2c18', 0.88);
+  ctx.lineWidth = 2.6;
+  for (const yy of [-r * 0.04, r * 0.34]) {
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.33, yy);
+    ctx.lineTo(r * 0.33, yy + r * 0.07);
+    ctx.stroke();
+  }
+
+  // 木纹
+  ctx.strokeStyle = flash ? '#ffffff' : withAlpha('#3f2c18', 0.45);
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < 3; i++) {
+    const yy = r * (0.56 + i * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.24, yy);
+    ctx.lineTo(r * 0.24, yy);
+    ctx.stroke();
+  }
+
+  // 靶心：轻轻呼吸的光环，也是全场唯一"活的"细节
+  const pulse = 1 + Math.sin(time * 2.2) * 0.05;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = flash ? 0.95 : 0.6;
+  ctx.strokeStyle = pal.glow;
+  ctx.lineWidth = 2.4;
+  ellipsePath(ctx, 0, -r * 0.52, r * 0.25 * pulse, r * 0.25 * pulse);
+  ctx.stroke();
+  ellipsePath(ctx, 0, -r * 0.52, r * 0.12 * pulse, r * 0.12 * pulse);
+  ctx.stroke();
+  ctx.restore();
+
+  // 打木桩时脚下扬起的一圈尘（纯装饰，不影响判定）
+  if (flash) {
+    ctx.save();
+    ctx.globalAlpha = clamp(e.hitFlash / 0.16, 0, 1) * 0.5;
+    ctx.strokeStyle = pal.glow;
+    ctx.lineWidth = 2;
+    ellipsePath(ctx, 0, r * 0.86, r * 1.3, r * 0.48);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 // ------------------------------------------------------------------ Boss

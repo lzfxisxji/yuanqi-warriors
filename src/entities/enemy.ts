@@ -98,11 +98,19 @@ export class Enemy extends Entity {
     if (this.dead) return { applied: 0, crit: opts.crit, killed: false, blocked: true, dodged: false };
     // 记下"最后一下是谁打的"：自由混战靠它把击杀算到正确的玩家头上。
     if (opts.ownerTeam) this.killedByTeam = opts.ownerTeam;
+    // 训练木桩（无限生命）：伤害照算（伤害数字 / 命中反馈全部正常），只是不扣血、不死。
+    // 提前 return 是为了顺带绕开下面的硬直与击退 —— 木桩必须纹丝不动。
+    if (this.def.infiniteHp) {
+      this.damageTaken += amount;
+      this.hitFlash = Math.max(this.hitFlash, 0.16);
+      this.hitFlashColor = '#ffffff';
+      return { applied: amount, crit: opts.crit, killed: false, blocked: false, dodged: false };
+    }
     this.hp -= amount;
     this.damageTaken += amount;
     this.hitFlash = Math.max(this.hitFlash, 0.16);
     this.hitFlashColor = '#ffffff';
-    if (opts.knockback > 0) {
+    if (opts.knockback > 0 && !this.def.immobile) {
       this.applyKnockback(opts.dirX, opts.dirY, opts.knockback);
     }
     // 受伤硬直（精英与 Boss 抗性更高）
@@ -145,7 +153,7 @@ export class Enemy extends Entity {
     if (this.burnTimer > 0 && !this.dead) {
       this.burnTimer -= dt;
       const tick = this.burnDps * dt;
-      this.hp -= tick;
+      if (!this.def.infiniteHp) this.hp -= tick;
       this.damageTaken += tick;
       if (Math.random() < dt * 14) {
         world.ctx.particles.spawn({
@@ -175,6 +183,18 @@ export class Enemy extends Entity {
       this.deathTimer += dt;
       this.decayVelocity(dt);
       this.integrate(dt, world.room);
+      return;
+    }
+
+    // 训练木桩（无法移动）：直接跳过整段 AI 与位移。
+    // 不只是 speed=0 —— 那样仍然会被击退推动、还会进入 windup 前摇让木桩抖一下。
+    // 这里把速度全部清零后返回，木桩在画面上永远钉在原地。
+    if (this.def.immobile) {
+      this.vx = 0;
+      this.vy = 0;
+      this.knockVx = 0;
+      this.knockVy = 0;
+      this.telegraph = 0;
       return;
     }
 

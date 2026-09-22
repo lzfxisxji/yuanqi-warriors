@@ -22,7 +22,9 @@ export type EnemyShape =
   | 'orbiter'
   | 'charger'
   | 'gazer'
-  | 'brute';
+  | 'brute'
+  /** 训练营木桩：一根立在场上的木桩，不会动也不会打人。 */
+  | 'dummy';
 
 export type EnemyState = 'idle' | 'detect' | 'chase' | 'position' | 'windup' | 'attack' | 'cooldown' | 'hit' | 'dead';
 
@@ -84,6 +86,20 @@ export interface EnemyDef {
   sprite?: string;
   /** 索敌方式：'self' 自身感知，'room' 全房索敌（精英） */
   awareness: 'self' | 'room';
+  /**
+   * 无限生命（训练营木桩）。
+   *
+   * true 时 `Enemy.applyDamage` 照常返回伤害量（伤害数字、命中特效都正常），
+   * 但**不扣血、永不死亡** —— 这正是"木桩"的意义：可以无限次试武器手感与 DPS。
+   */
+  infiniteHp?: boolean;
+  /**
+   * 彻底无法移动（训练营木桩）。
+   *
+   * 不只是 speed=0：连**击退**都不吃。否则一发霰弹就能把木桩打得满场跑，
+   * 玩家反而测不准射程与弹道。
+   */
+  immobile?: boolean;
 }
 
 export const ENEMIES: EnemyDef[] = [
@@ -333,8 +349,44 @@ export const SUMMON_ENEMIES: EnemyDef[] = [
   palCompanion('pal_niulai', '牛来·伙伴', 'niulai', '#ffc933'),
 ];
 
-/** 全部可被 getEnemyDef 解析的敌人（基础表 + 召唤专属）。 */
-const ALL_ENEMIES: EnemyDef[] = [...ENEMIES, ...SUMMON_ENEMIES];
+/**
+ * 训练营专用敌人池。**与 ENEMIES / SUMMON_ENEMIES 一样刻意分开** ——
+ * 木桩不是妖怪：它不进普通战斗波次、不进图鉴、不掉金币、不计击杀，
+ * 只由训练营场景点名 `getEnemyDef('training_dummy')` 取用。
+ */
+export const TRAINING_ENEMIES: EnemyDef[] = [
+  {
+    id: 'training_dummy',
+    name: '训练木桩',
+    desc: '训练营里的木桩。不会移动、不会攻击、生命值无限，专门用来试武器手感与伤害。',
+    elite: false,
+    tier: 1,
+    // 数值本身无意义（infiniteHp 让它永不掉血），给 1 是为了让血条恒满
+    hp: 1,
+    speed: 0,
+    radius: 26,
+    // 不造成任何接触伤害：训练营里玩家不该被"自己撞上去的木桩"蹭掉血
+    contactDamage: 0,
+    detectRange: 0,
+    keepRange: 0,
+    attackCooldown: 99,
+    windup: 99,
+    recover: 99,
+    ai: 'melee',
+    // 不掉金币、不计分 —— 否则在训练营里刷金币/刷分会污染战绩
+    gold: [0, 0],
+    score: 0,
+    knockbackResist: 1,
+    palette: { body: '#c89a5e', dark: '#7a5836', accent: '#e8c898', glow: '#ffd479' },
+    shape: 'dummy',
+    awareness: 'self',
+    infiniteHp: true,
+    immobile: true,
+  },
+];
+
+/** 全部可被 getEnemyDef 解析的敌人（基础表 + 召唤专属 + 训练营）。 */
+const ALL_ENEMIES: EnemyDef[] = [...ENEMIES, ...SUMMON_ENEMIES, ...TRAINING_ENEMIES];
 
 export function getEnemyDef(id: string): EnemyDef {
   const d = ALL_ENEMIES.find((e) => e.id === id);

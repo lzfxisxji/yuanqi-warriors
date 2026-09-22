@@ -34,6 +34,20 @@ export interface SkillDef {
   dashSpeed?: number;
   /** dash：冲刺期间是否无敌 */
   invulnerable?: boolean;
+  /**
+   * dash：冲刺途中**撞到敌人**造成的伤害。
+   *
+   * 不填 = 纯位移技能。狼影的「影袭翻滚」就是这一类 ——
+   * 它的技能描述写的是"翻滚全程无敌并能穿过敌人"，本来就不该伤人。
+   */
+  damage?: number;
+  /**
+   * dash：撞到敌人的击退力度。
+   *
+   * 与 `damage` 分开是因为两者可以独立存在：肥嘟袋鼠的「重拳突进」只负责
+   * "把挡路的敌人整个撞开"（只有击退、没有伤害），牛来的「蛮牛冲撞」则两样都要。
+   */
+  knockback?: number;
   /** overdrive：移动速度倍率 */
   speedMul?: number;
   /** overdrive：额外闪避几率 */
@@ -88,6 +102,8 @@ export const CHARACTERS: CharacterDef[] = [
       duration: 0.24,
       dashSpeed: 940,
       invulnerable: true,
+      // 刻意**不配 damage / knockback**：这是闪避技不是输出技，
+      // 1.6 秒冷却 + 全程无敌已经很强，再加伤害会让其它角色失去存在的意义。
     },
     palette: {
       primary: '#4a7fd4',
@@ -188,11 +204,12 @@ export const CHARACTERS: CharacterDef[] = [
     skill: {
       kind: 'dash',
       name: '重拳突进',
-      desc: '向瞄准方向猛冲一段，冲刺期间无敌并可穿过敌人。',
+      desc: '向瞄准方向猛冲一段，冲刺期间无敌，撞到的敌人被整个推开（只有击退、没有伤害）。',
       cooldown: 1.4,
       duration: 0.22,
       dashSpeed: 1010,
       invulnerable: true,
+      knockback: 470,
     },
     palette: {
       primary: '#f7d046',
@@ -263,6 +280,8 @@ export const CHARACTERS: CharacterDef[] = [
       cooldown: 7.5,
       duration: 0.36,
       dashSpeed: 1020,
+      damage: 42,
+      knockback: 560,
     },
     palette: {
       primary: '#ffc933',

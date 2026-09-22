@@ -600,6 +600,58 @@ describe('联机大厅：模式卡说明文字不溢出（需求16-3）', () => 
 
 // ------------------------------------------------------------------ 需求 20
 
+describe('训练营入口（需求 29）', () => {
+  test('主菜单有「训练营」入口，与「联机模式」同行分列且不侵入右侧面板', () => {
+    const buttons = buildMenuButtons(createMenuState());
+    const multi = buttons.find((b) => b.id === 'multi');
+    const training = buttons.find((b) => b.id === 'training');
+    expect(training).toBeDefined();
+    expect(training!.label).toBe('训练营');
+    expect(training!.enabled).not.toBe(false);
+    // 同一行、同宽、左右分列（联机在左）
+    expect(training!.y).toBe(multi!.y);
+    expect(training!.w).toBe(multi!.w);
+    expect(training!.x).toBeGreaterThanOrEqual(multi!.x + multi!.w);
+    // 训练营不改任何存档语义，因此不能在室内状态下被别的东西顶掉
+    const state = createMenuState();
+    toRoom(state);
+    expect(buildMenuButtons(state).find((b) => b.id === 'training')!.label).toBe('训练营');
+  });
+
+  test('训练营页渲染：标题 + 说明 + 全角色全武器 + 开始训练 / 返回大厅', () => {
+    const state = createMenuState();
+    state.mode = 'training';
+    const joined = render(state)
+      .map((t) => t.text)
+      .join('|');
+    expect(joined).toContain('训练营');
+    expect(joined).toContain('无限生命的木桩');
+    expect(joined).toContain('开始训练');
+    for (const c of CHARACTERS) expect(joined).toContain(c.name);
+    for (const w of WEAPONS) expect(joined).toContain(w.name);
+    // 训练营里没有"解锁"概念：不该出现任何锁定文案
+    expect(joined).not.toContain('未解锁');
+    expect(joined).not.toContain('解锁条件');
+  });
+
+  test('训练营页的卡片按钮全部落在画面内，不压到底部两个按钮', () => {
+    const state = createMenuState();
+    state.mode = 'training';
+    const buttons = buildMenuButtons(state);
+    const start = buttons.find((b) => b.id === 'train-start')!;
+    const back = buttons.find((b) => b.id === 'menu-back')!;
+    expect(start.y + start.h).toBeLessThanOrEqual(back.y);
+    for (const b of buttons) {
+      expect(b.x).toBeGreaterThanOrEqual(0);
+      expect(b.y).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.w).toBeLessThanOrEqual(1280);
+      expect(b.y + b.h).toBeLessThanOrEqual(720);
+    }
+  });
+});
+
+// ------------------------------------------------------------------ 需求 20
+
 describe('存档管理页（需求 20）', () => {
   function savesState(): MenuState {
     const state = createMenuState();

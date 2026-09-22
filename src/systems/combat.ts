@@ -16,7 +16,16 @@ export interface DamageContext {
   audio: AudioSystem;
 }
 
-export type DamageSource = 'bullet' | 'explosion' | 'contact' | 'burn' | 'thorns' | 'beam' | 'melee';
+export type DamageSource =
+  | 'bullet'
+  | 'explosion'
+  | 'contact'
+  | 'burn'
+  | 'thorns'
+  | 'beam'
+  | 'melee'
+  /** 冲刺类技能（蛮牛冲撞 / 重拳突进）撞到敌人的那一下。 */
+  | 'dash';
 
 export interface HitOptions {
   crit: boolean;

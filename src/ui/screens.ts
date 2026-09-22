@@ -27,7 +27,7 @@ import {
   drawWeaponIcon,
 } from '../render/art';
 
-export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi';
+export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi' | 'training';
 
 /** 联机大厅阶段：idle 选模式/建房/加入；room 已在房间内。 */
 export type LobbyPhase = 'idle' | 'room';
@@ -143,6 +143,15 @@ export interface MenuState {
   /** 非 null 时弹出二次确认对话框（删除单份存档 / 清空全部数据）。 */
   confirm: PendingConfirm | null;
   lobby: LobbyInfo;
+  /**
+   * 训练营的选择（需求 29）。
+   *
+   * 刻意**不复用** `selectedChar`：那个是"远征选角"的状态，图鉴/存档页也在读它。
+   * 训练营里所有角色与武器都必须可选（不看解锁、不看是否已发现），
+   * 混用一份状态会让"我在训练营选了奶龙"悄悄改掉下次远征的默认角色。
+   */
+  trainingChar: number;
+  trainingWeapon: number;
 }
 
 export function createMenuState(): MenuState {
@@ -155,6 +164,8 @@ export function createMenuState(): MenuState {
     codexPage: 0,
     confirm: null,
     lobby: createLobbyInfo(),
+    trainingChar: 0,
+    trainingWeapon: 0,
   };
 }
 
@@ -182,6 +193,70 @@ const SAVE_ROW = { x: 200, y0: 152, w: 880, h: 62, gap: 12 };
 
 /** 存档行里「继续 / 删除」两个按钮的尺寸（相对行）。 */
 const SAVE_BTN = { contX: 876, delX: 980, yOff: 11, w: 92, h: 40 };
+
+// ------------------------------------------------------- 训练营页（需求 29）
+
+/**
+ * 训练营页的列数与卡片几何。
+ *
+ * 列数取 `max(6, 角色数)`：12 把武器正好排两行（每行 6 张），
+ * 而角色多于 6 名时自动加列 —— 否则第 7 张角色卡会折到下一行、压在武器区上。
+ */
+const TRAIN_COLS = Math.max(6, CHARACTERS.length);
+const TRAIN_AREA = { x: 92, w: 1096, gap: 12 };
+const TRAIN_CARD_W = Math.floor((TRAIN_AREA.w - TRAIN_AREA.gap * (TRAIN_COLS - 1)) / TRAIN_COLS);
+/** 角色行 / 武器行（武器两行，行距 gapY）。 */
+const TRAIN_CHAR_ROW = { y: 134, h: 108 };
+const TRAIN_WEAPON_ROW = { y: 284, h: 86, gapY: 94 };
+
+function trainColX(i: number): number {
+  return TRAIN_AREA.x + i * (TRAIN_CARD_W + TRAIN_AREA.gap);
+}
+
+/** 训练营卡片在卡片矩形内的统一绘制（底 + 边框 + 选中/悬停高亮）。 */
+function drawTrainCard(
+  ctx: CanvasRenderingContext2D,
+  btn: { x: number; y: number; w: number; h: number },
+  selected: boolean,
+  hovered: boolean,
+  time: number,
+): void {
+  ctx.fillStyle = selected ? 'rgba(38,30,56,0.96)' : 'rgba(22,18,34,0.9)';
+  roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 14);
+  ctx.fill();
+  ctx.strokeStyle = selected ? UI_COLORS.borderStrong : hovered ? 'rgba(255,212,121,0.45)' : 'rgba(140,132,170,0.3)';
+  ctx.lineWidth = selected ? 2.6 : 1.6;
+  ctx.stroke();
+  if (selected) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.1 + Math.sin(time * 3) * 0.03;
+    ctx.fillStyle = '#ffd479';
+    roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 14);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/** 训练营页的一行小标题：左边是区块名，右边一句说明。 */
+function drawTrainSection(
+  ctx: CanvasRenderingContext2D,
+  title: string,
+  note: string,
+  y: number,
+): void {
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '800 17px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = UI_COLORS.gold;
+  ctx.fillText(title, TRAIN_AREA.x, y);
+  const tw = ctx.measureText(title).width;
+  ctx.font = '600 12px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.fillText(note, TRAIN_AREA.x + tw + 12, y + 1);
+  ctx.restore();
+}
 
 export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[] = []): UiButton[] {
   const buttons: UiButton[] = [];
@@ -216,9 +291,21 @@ export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[
         label: inRoom ? '返回房间' : '联机模式',
         x,
         y: 416,
-        w,
+        w: 146,
         h: 46,
         style: inRoom ? 'accent' : 'primary',
+        enabled: !locked,
+      });
+      // 训练营（需求 29）：与「联机模式」同行分列，把 300px 拆成两个 146px。
+      // 排在联机旁边是因为它俩是同一层级的东西 —— 都不是"再来一趟远征"。
+      buttons.push({
+        id: 'training',
+        label: '训练营',
+        x: x + 154,
+        y: 416,
+        w: 146,
+        h: 46,
+        style: 'primary',
         enabled: !locked,
       });
       buttons.push({ id: 'codex', label: '图鉴', x, y: 470, w, h: 42, style: 'ghost', enabled: !locked });
@@ -235,6 +322,37 @@ export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[
         style: 'ghost',
         enabled: !locked,
       });
+      break;
+    }
+    case 'training': {
+      // 角色：全解锁，不看 `isCharacterUnlocked` —— "可以使用任何角色"就是这个意思。
+      for (let i = 0; i < CHARACTERS.length; i++) {
+        buttons.push({
+          id: `train-char:${i}`,
+          label: '',
+          x: trainColX(i % TRAIN_COLS),
+          y: TRAIN_CHAR_ROW.y,
+          w: TRAIN_CARD_W,
+          h: TRAIN_CHAR_ROW.h,
+          style: 'ghost',
+          card: true,
+        });
+      }
+      // 武器：12 把（8 枪械 + 4 近战）全开，不看是否已发现。
+      for (let i = 0; i < WEAPONS.length; i++) {
+        buttons.push({
+          id: `train-weapon:${i}`,
+          label: '',
+          x: trainColX(i % TRAIN_COLS),
+          y: TRAIN_WEAPON_ROW.y + Math.floor(i / TRAIN_COLS) * TRAIN_WEAPON_ROW.gapY,
+          w: TRAIN_CARD_W,
+          h: TRAIN_WEAPON_ROW.h,
+          style: 'ghost',
+          card: true,
+        });
+      }
+      buttons.push({ id: 'train-start', label: '开始训练', x: 470, y: 484, w: 340, h: 58, style: 'accent' });
+      buttons.push({ id: 'menu-back', label: '返回大厅', x: 540, y: 556, w: 200, h: 44, style: 'ghost' });
       break;
     }
     case 'saves': {
@@ -492,6 +610,9 @@ export function drawMenu(
       break;
     case 'multi':
       drawLobby(ctx, state, buttons, hoverId, time);
+      break;
+    case 'training':
+      drawTraining(ctx, state, buttons, hoverId, time);
       break;
   }
   // 其余页面用右上角徽标兜底；主菜单除右侧面板外也在右上角加一个常驻房间号芯片，
@@ -1163,6 +1284,102 @@ function drawCharSelect(
   }
   const back = buttons.find((b) => b.id === 'menu-back');
   if (back) drawButton(ctx, back, hoverId === back.id, false, time);
+}
+
+/**
+ * 训练营（需求 29）：选角色 + 选武器 → 进练习场。
+ *
+ * 与「选择角色」页最大的区别是**全解锁**：这里不看 `progress`、不看 `discoveredWeapons`，
+ * 6 名角色 × 12 把武器全部可点（"可以使用任何角色和武器"）。
+ * 因此这一页不画"未解锁"遮罩，也不做 `enabled:false` 判断。
+ */
+function drawTraining(
+  ctx: CanvasRenderingContext2D,
+  state: MenuState,
+  buttons: readonly UiButton[],
+  hoverId: string | null,
+  time: number,
+): void {
+  drawHeading(ctx, '训练营', 640, 50, 34);
+  drawHeading(
+    ctx,
+    '无限生命的木桩 · 角色与武器全部可选 · 不记入战绩、不占存档',
+    640,
+    84,
+    14,
+    'center',
+    UI_COLORS.textDim,
+  );
+
+  // 卡片内文字按卡宽等比缩放（与角色选择页同一套规则：250px 为基准宽）
+  const k = Math.min(1, TRAIN_CARD_W / 172);
+
+  // ---------------------------------------------------------- 角色
+  drawTrainSection(ctx, '角色', '全部 6 名，无需解锁', (TRAIN_CHAR_ROW.y - 14));
+  for (let i = 0; i < CHARACTERS.length; i++) {
+    const def = CHARACTERS[i]!;
+    const btn = buttons.find((b) => b.id === `train-char:${i}`);
+    if (!btn) continue;
+    const selected = state.trainingChar === i;
+    drawTrainCard(ctx, btn, selected, hoverId === btn.id, time);
+
+    const cx = btn.x + btn.w / 2;
+    drawCharacterPortrait(ctx, def, cx, btn.y + 38, 0.74 * k, time);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = selected ? UI_COLORS.text : 'rgba(216,208,236,0.86)';
+    ctx.font = `800 ${Math.round(17 * k)}px "PingFang SC","Segoe UI",sans-serif`;
+    ctx.fillText(def.name, cx, btn.y + 82);
+    ctx.fillStyle = selected ? '#7ef2c0' : 'rgba(126,242,192,0.62)';
+    ctx.font = `600 ${Math.round(11 * k)}px "PingFang SC","Segoe UI",sans-serif`;
+    ctx.fillText(def.skill.name, cx, btn.y + 98);
+  }
+
+  // ---------------------------------------------------------- 武器
+  drawTrainSection(ctx, '武器', '全部 12 把（8 远程 + 4 近战），无需发现', TRAIN_WEAPON_ROW.y - 14);
+  for (let i = 0; i < WEAPONS.length; i++) {
+    const def = WEAPONS[i]!;
+    const btn = buttons.find((b) => b.id === `train-weapon:${i}`);
+    if (!btn) continue;
+    const selected = state.trainingWeapon === i;
+    drawTrainCard(ctx, btn, selected, hoverId === btn.id, time);
+
+    const cx = btn.x + btn.w / 2;
+    drawWeaponIcon(ctx, def, cx, btn.y + 28, Math.round(38 * k));
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = selected ? UI_COLORS.text : 'rgba(216,208,236,0.86)';
+    ctx.font = `700 ${Math.round(12 * k)}px "PingFang SC","Segoe UI",sans-serif`;
+    ctx.fillText(def.name, cx, btn.y + 60);
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.font = `600 ${Math.round(10 * k)}px "PingFang SC","Segoe UI",sans-serif`;
+    ctx.fillText(kindLabel(def.kind), cx, btn.y + 75);
+  }
+
+  // ---------------------------------------------------------- 当前选择摘要
+  // 放在按钮下方：卡片区最下一行到按钮之间只剩 20px，塞在中间会贴到卡边上。
+  const cdef = CHARACTERS[state.trainingChar] ?? CHARACTERS[0]!;
+  const wdef = WEAPONS[state.trainingWeapon] ?? WEAPONS[0]!;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 13px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = 'rgba(206,198,232,0.82)';
+  ctx.fillText(
+    `当前选择：${cdef.name}（${cdef.skill.name}） · ${wdef.name}（${kindLabel(wdef.kind)}）`,
+    640,
+    620,
+  );
+  ctx.font = '500 12px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = 'rgba(206,198,232,0.55)';
+  ctx.fillText('进场后按 Esc 可随时暂停并返回大厅', 640, 644);
+  ctx.restore();
+
+  for (const b of buttons) {
+    if (b.id === 'train-start' || b.id === 'menu-back') {
+      drawButton(ctx, b, hoverId === b.id, false, time);
+    }
+  }
 }
 
 function drawSettingsPanel(

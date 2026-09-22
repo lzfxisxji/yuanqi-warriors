@@ -13,6 +13,7 @@ import {
   BOSS_DEATH_DURATION,
   BOSS_DEATH_EXPLOSION_INTERVAL,
   BOSS_DEATH_SLOWMO,
+  DASH_HIT_PAD,
   DOOR_LOCK_DELAY,
   FLOOR_COUNT,
   MAX_PLAYERS,
@@ -25,6 +26,8 @@ import {
   ROOM_W,
   TILE,
   Tile,
+  TRAINING_DUMMY_ID,
+  TRAINING_DUMMY_OFFSET_Y,
   VIEW_H,
   VIEW_W,
 } from '../data/config';
@@ -38,7 +41,7 @@ import { doorEntryPoint, doorRect, generateRoomLayout, DOOR_TRIGGER_DEPTH, Room 
 import { Boss } from '../entities/boss';
 import { getBossDefForFloor } from '../data/bosses';
 import { Enemy, type EnemyWorld } from '../entities/enemy';
-import { Player } from '../entities/player';
+import { Player, createWeaponInstance } from '../entities/player';
 import { Pickup, scatterGold, type PickupKind } from '../entities/pickup';
 import { ProjectileSystem, type Projectile, type ProjectileKind, type ProjectileSpec } from '../entities/projectile';
 import type { DamageContext, HitEntity } from '../systems/combat';
@@ -114,6 +117,19 @@ export interface NetOptions {
   /** 4 位房间号（HUD 展示用）。 */
   roomCode: string;
   peers: PeerInfo[];
+}
+
+/**
+ * 训练营开局参数（需求 29）。
+ *
+ * 训练营是一个**孤立的练习场**：一间封闭房间 + 一个无限血木桩，
+ * 角色与武器都由玩家在训练营界面里任选（不受解锁限制）。
+ * 它不进地牢、不存档、不计战绩 —— 这些差异全部由 `GameplayScene` 里的
+ * `this.training` 分支处理，而不是另写一个场景。
+ */
+export interface TrainingOptions {
+  /** 训练营里使用的武器 id（12 把任选，不看是否已发现）。 */
+  weaponId: string;
 }
 
 interface TransitionState {
@@ -192,6 +208,18 @@ export class GameplayScene {
   /** 自动存档节流：每 AUTOSAVE_INTERVAL 秒落一次盘 */
   private autosaveAccum = 0;
 
+  // ------------------------------------------------------------- 训练营状态
+  /** 本局是不是训练营（封闭单间 + 木桩，不存档、不计战绩、不出怪）。 */
+  private readonly training: boolean;
+  /**
+   * 冲刺技能（蛮牛冲撞 / 重拳突进）**本帧已经撞到过**的目标。
+   *
+   * 一次冲刺只有 0.2~0.36 秒，但每帧都会做碰撞检测 —— 没有这个集合，
+   * 一个敌人在一次冲刺里会被反复结算十几下（42 伤害 × 十几下 = 秒杀全场）。
+   * 键是玩家：每次冲刺开始时（`dashTimer` 从 0 变正）清空对应的集合。
+   */
+  private readonly dashHits = new Map<Player, Set<HitEntity>>();
+
   // ------------------------------------------------------------- 联机状态
   /** 联网客户端（单人模式为 null，所有联机分支都不会触发）。 */
   private net: NetClient | null = null;
@@ -244,15 +272,24 @@ export class GameplayScene {
    * @param resume 续玩存档（单机）。传入时会按同一种子重建地牢、恢复金币/强化/武器/生命，
    *               并把玩家放回存档所在房间；房间内的敌人与掉落不恢复（重新开打）。
    */
-  constructor(host: GameHost, characterId: string, seed: number, net?: NetOptions, resume?: SavedRun | null) {
+  constructor(
+    host: GameHost,
+    characterId: string,
+    seed: number,
+    net?: NetOptions,
+    resume?: SavedRun | null,
+    training?: TrainingOptions | null,
+  ) {
     this.host = host;
     this.bus = host.bus;
     this.rng = new RNG((seed ^ 0x5bf03635) >>> 0);
+    this.training = !!training;
     this.run = new RunState(getCharacter(characterId), seed);
     if (resume) {
       for (const [key, flags] of Object.entries(resume.rooms)) this.savedRoomFlags[key] = flags;
       this.run.restoreRun(resume);
     }
+    if (training) this.setupTraining(training);
     this.allPlayers.push(this.run.player);
     this.damageCtx = {
       particles: this.particles,
@@ -298,6 +335,16 @@ export class GameplayScene {
   /** 当前房间存活的敌人数量（HUD 调试 / 自动化冒烟测试用）。 */
   get enemyCount(): number {
     return this.enemies.length;
+  }
+
+  /** 本局是否是训练营（自动化测试用）。 */
+  get isTraining(): boolean {
+    return this.training;
+  }
+
+  /** 训练木桩（不存在时返回 null；自动化测试用）。 */
+  get trainingDummy(): Enemy | null {
+    return this.enemies.find((e) => e.def.infiniteHp === true) ?? null;
   }
 
   /** 当前房间是否已经完成清场。 */
@@ -348,6 +395,54 @@ export class GameplayScene {
     return this.currentPickups;
   }
 
+  // ------------------------------------------------------------- 训练营
+
+  /**
+   * 训练营的开局准备（需求 29）。必须在 `getRoom()` 之前调用 —— 它改的是
+   * 出生房间的**门与邻居**，而房间布局是按门现生成的。
+   *
+   * 三件事：
+   *  1. 把出生房间的四个门和邻居全部拿掉 → 一间**封闭**的练习场。
+   *     （不是"锁门"：锁门会挂着「消灭所有敌人」的目标，而且木桩永远打不死、
+   *       房间永远清不了，玩家会被永久关在门里。）
+   *  2. 房间类型改成 `start`（非战斗房）→ 不进波次、不锁门、不清场判定。
+   *  3. 换武器：玩家选的武器直接替换掉角色的初始武器，并**重算弹匣**。
+   */
+  private setupTraining(opts: TrainingOptions): void {
+    const node = this.run.plan.nodes.get(this.run.currentRoomKey);
+    if (node) {
+      node.doors = [];
+      node.neighbors = {};
+      node.type = 'start';
+      node.cleared = true;
+    }
+    const player = this.run.player;
+    player.weapons = [createWeaponInstance(opts.weaponId, player.mods)];
+    player.weaponIndex = 0;
+  }
+
+  /** 在房间正中偏上放一个无限生命、无法移动的木桩。 */
+  private spawnTrainingDummy(): void {
+    const x = ROOM_W / 2;
+    const y = clamp(ROOM_H / 2 + TRAINING_DUMMY_OFFSET_Y, 70, ROOM_H - 70);
+    const def = getEnemyDef(TRAINING_DUMMY_ID);
+    const e = new Enemy(def, x, y, this.run.floor);
+    e.spawnTimer = 0;
+    this.enemies.push(e);
+    this.particles.spawn({
+      kind: 'ring',
+      x,
+      y,
+      life: 0.4,
+      size: 8,
+      sizeEnd: def.radius * 3.6,
+      color: def.palette.glow,
+      alpha0: 0.85,
+      alpha1: 0,
+      drag: 0,
+    });
+  }
+
   // ------------------------------------------------------------- 房间管理
 
   private getRoom(key: string): Room {
@@ -395,6 +490,8 @@ export class GameplayScene {
    * 不能出现"显示已保存、其实联机局没存"这种骗人的反馈。
    */
   private persistRun(): boolean {
+    // 训练营不写盘：它是练习场不是远征，占一个存档位只会让「继续远征」变味。
+    if (this.training) return false;
     if (this.isMultiplayer() || this.ended || this.run.player.dead) return false;
     this.host.save.setRun(this.run.snapshotRun(this.collectRoomFlags()));
     return true;
@@ -523,6 +620,13 @@ export class GameplayScene {
       }
     } else {
       room.unlockAllDoors();
+    }
+
+    // 训练营（需求 29）：整间房只有木桩，没有波次、没有首领、没有事件，
+    // 也**不落盘**（`persistRun` 对训练局直接返回 false）—— 训练营不该占存档位。
+    if (this.training) {
+      this.spawnTrainingDummy();
+      return;
     }
 
     if (node.type === 'shop' && !this.isMultiplayer()) {
@@ -729,6 +833,7 @@ export class GameplayScene {
       },
     });
 
+    this.updateDashDamage();
     this.resolveContactDamage(dt);
     this.updateEnemyDeaths();
     this.updatePickups(dt);
@@ -819,9 +924,77 @@ export class GameplayScene {
     return out;
   }
 
+  /**
+   * 冲刺技能的撞击结算（需求 29）。
+   *
+   * 修的是一个"技能描述与实现不符"的老毛病：「蛮牛冲撞」的描述写着
+   * 「撞到的敌人受到 42 点伤害并被击退」，但 `Player.useSkill` 的 dash 分支
+   * 只把玩家推了出去，**从来没有对敌人做过任何判定** —— 撞上去一点反馈都没有。
+   *
+   * 判定方式与近战一致（圆形接触 + 当帧一次性结算），差别只在：
+   *   - 每帧检测的是玩家**当前位置**的重叠，所以冲刺过程本身就会扫过一条线；
+   *   - 用 `dashHits` 保证同一次冲刺对同一个目标只结算一次（否则 0.36 秒里
+   *     会重复结算十几下，42 伤害会变成几百点）。
+   *   - 伤害与击退都取技能定义里的 `damage` / `knockback`：不填就是纯位移
+   *     （狼影的「影袭翻滚」本来就只负责跑路）。
+   */
+  private updateDashDamage(): void {
+    for (const player of this.allPlayers) {
+      const skill = player.def.skill;
+      const dashing = skill.kind === 'dash' && !player.dead && player.dashTimer > 0;
+      // 不在冲刺 = 一次冲刺结束，把命中记录清掉；下一次冲刺从零开始
+      if (!dashing) {
+        this.dashHits.get(player)?.clear();
+        continue;
+      }
+      const damage = skill.damage ?? 0;
+      const knockback = skill.knockback ?? 0;
+      if (damage <= 0 && knockback <= 0) continue;
+
+      let hits = this.dashHits.get(player);
+      if (!hits) {
+        hits = new Set<HitEntity>();
+        this.dashHits.set(player, hits);
+      }
+
+      const reach = player.radius + DASH_HIT_PAD;
+      for (const t of this.allTargets()) {
+        if (t.dead || t.team === player.team) continue;
+        if (hits.has(t)) continue;
+        if (dist(player.x, player.y, t.x, t.y) > reach + t.radius) continue;
+        hits.add(t);
+
+        const n = normalize(t.x - player.x, t.y - player.y);
+        // 完全重叠时（撞在正中）取冲刺方向，保证"撞"的方向感永远对
+        const dirX = n.x === 0 && n.y === 0 ? player.dashDirX : n.x;
+        const dirY = n.x === 0 && n.y === 0 ? player.dashDirY : n.y;
+        const result = t.applyDamage(damage, {
+          crit: false,
+          source: 'dash',
+          dirX,
+          dirY,
+          knockback,
+          color: player.def.palette.glow,
+          ownerTeam: player.team,
+        });
+        const angle = Math.atan2(dirY, dirX);
+        // 命中火花按伤害类型分开画：纯击退的冲刺（肥嘟袋鼠）不该冒出伤害数字
+        this.particles.hitSparks(t.x, t.y, angle, player.def.palette.glow, 10, 1.2);
+        this.particles.dust(t.x, t.y, 5);
+        if (damage > 0 && result.applied > 0) {
+          this.numbers.add(t.x, t.y - 26, result.applied, false, player.def.palette.glow);
+        }
+        if (player === this.run.player) this.shake.add(0.2);
+      }
+    }
+  }
+
   private resolveContactDamage(dt: number): void {
     for (const e of this.enemies) {
       if (e.dead) continue;
+      // 训练木桩的接触伤害是 0：站在它旁边练枪不该被"蹭掉血"，
+      // 也不该每 0.55 秒刷一次受击反馈（震屏 / 红闪）。
+      if (e.def.contactDamage <= 0) continue;
       const cd = this.contactTimers.get(e) ?? 0;
       if (cd > 0) {
         this.contactTimers.set(e, cd - dt);
@@ -1662,6 +1835,9 @@ export class GameplayScene {
       // 平局判定用结构化结果，而不是去字符串里找「平局」两个字
       pkTie: this.netMode === 'pk' && pkIsDraw(this.pkOutcome),
       net: this.isMultiplayer(),
+      // 训练营：暂停面板要换成「继续训练 / 返回大厅」两个出口，
+      // 不能出现"保存进度 / 放弃远征"——训练局既没有存档也没有远征可放弃。
+      training: this.training,
     };
   }
 
@@ -2177,6 +2353,9 @@ export class GameplayScene {
       showMinimap: this.host.save.data.settings.showMinimap,
       showCrosshair: this.hidesSystemCursor,
       fps: this.fps,
+      // 训练营：HUD 左侧的「第 N 层」改成「训练营」，小地图也不再画
+      //（地牢只生成了出生房这一间，画一张空地图纯属干扰）。
+      training: this.training,
     });
 
     if (this.isMultiplayer()) this.drawNetHud(ctx, time);
@@ -2317,6 +2496,11 @@ export class GameplayScene {
 
   /** 屏幕顶部的当前目标提示（战斗房锁门 / 补给站待确认 / 传送门已开启）。 */
   private objectiveBanner(): { text: string; color: string } | null {
+    // 训练营（需求 29）：这里没有"下一步该干嘛"，顶部只说明这是个练习场。
+    // 必须压过下面的"消灭所有敌人"—— 木桩是打不死的，那句话会把玩家逼疯。
+    if (this.training) {
+      return { text: '训练营 · 无限生命木桩 · 按 Esc 可随时返回大厅', color: 'rgba(255,212,121,0.9)' };
+    }
     // 自由混战：比赛状态压过"消灭所有敌人"——PK 里没人关心清怪进度，
     // 玩家要一眼看到的是"几点开打 / 打到什么程度算赢"。
     if (this.netMode === 'pk') {
@@ -3020,6 +3204,7 @@ export class GameplayScene {
     this.particles.clear();
     this.projectiles.clear();
     this.numbers.clear();
+    this.dashHits.clear();
     this.host.renderer.clearCache();
   }
 }
