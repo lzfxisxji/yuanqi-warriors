@@ -18,8 +18,6 @@ import {
   MAX_PLAYERS,
   NET_INPUT_HZ,
   NET_SNAPSHOT_HZ,
-  PK_KILL_TARGET,
-  PK_MATCH_SECONDS,
   PLAYER_COLORS,
   ROOM_CLEAR_REWARD_DELAY,
   ROOM_COLS,
@@ -54,6 +52,7 @@ import { updateWeapon } from '../systems/weaponSystem';
 import { darken, lighten, drawBoss, drawEnemy, drawPickup, drawPlayer } from '../render/art';
 import { drawHud } from '../render/hud';
 import { NetClient } from '../net/NetClient';
+import { PkMatch, pkIsDraw, pkOutcomeText, type PkEndReason, type PkFighter, type PkOutcome } from '../net/pkMatch';
 import type {
   BossNetState,
   EnemyNetState,
@@ -223,14 +222,15 @@ export class GameplayScene {
   private netOverSent = false;
   private winnerId: string | null = null;
   /**
-   * 自由混战：本局剩余秒数（只由房主推进，客户端从快照读）。
+   * 自由混战裁判（纯逻辑，见 `src/net/pkMatch.ts`）。
    *
-   * 以前 PK 只有"活到最后"一个结束条件，两个人都缩着不打就永远不结束；
-   * 现在到点即按人头数排名，比赛一定会收束（需求 27）。
+   * 房主：每帧 `update()` 推进；客户端：只 `mirror()` 房主快照里的阶段与倒计时。
+   * 规则（等齐人 → 开赛倒计时 → 3 分钟 / 10 人头 / 最后幸存者）全在这个类里，
+   * 场景只负责把 Player 拍平成 PkFighter 和把结果画到结算面板上。
    */
-  private pkTimeLeft = PK_MATCH_SECONDS;
-  /** 自由混战：本局人头目标（提前结束比赛的门槛）。 */
-  private readonly pkKillTarget = PK_KILL_TARGET;
+  private readonly pk = new PkMatch();
+  /** 本局的 PK 结果（结算抬头要靠它区分"平局"与"失败"）。 */
+  private pkOutcome: PkOutcome | null = null;
   /** 已经有人点过「再来一次」，正在等房主开下一局。 */
   private rematchWaiting = false;
   private netBanner = '';
@@ -457,15 +457,18 @@ export class GameplayScene {
     player.knockVx = 0;
     player.knockVy = 0;
     player.beamActive = false;
-    // 联机：其余玩家跟随进门 / 换层，围绕落点散开
+    // 联机：其余玩家跟随进门 / 换层，围绕落点散开。
+    // 自由混战例外：对手不能贴脸出生（44px 就一个格子，落地即互射），
+    // 拉开到半个场地之外 —— 这也算"场景重置"的一部分（需求 28）。
     if (this.netRole !== 'local' && this.allPlayers.length > 1) {
       const n = Math.max(1, this.allPlayers.length - 1);
+      const spread = this.netMode === 'pk' ? 260 : 44;
       let i = 0;
       for (const rp of this.allPlayers) {
         if (rp === player) continue;
         const a = (i / n) * TAU - Math.PI / 2;
-        rp.x = clamp(player.x + Math.cos(a) * 44, 60, ROOM_W - 60);
-        rp.y = clamp(player.y + Math.sin(a) * 44, 60, ROOM_H - 60);
+        rp.x = clamp(player.x + Math.cos(a) * spread, 60, ROOM_W - 60);
+        rp.y = clamp(player.y + Math.sin(a) * spread, 60, ROOM_H - 60);
         rp.vx = 0;
         rp.vy = 0;
         rp.knockVx = 0;
@@ -684,10 +687,6 @@ export class GameplayScene {
     if (this.ended) return;
 
     this.run.timeSec += dtRaw;
-    // 自由混战：比赛倒计时（只有房主的时钟算数，客户端照快照显示）
-    if (this.netMode === 'pk' && this.netRole === 'host') {
-      this.pkTimeLeft = Math.max(0, this.pkTimeLeft - dtRaw);
-    }
     const player = this.run.player;
 
     this.updateAim();
@@ -741,6 +740,7 @@ export class GameplayScene {
     this.updateBossSequence(dtRaw);
     this.checkPlayerDeath();
     this.checkNetEnd();
+    if (this.netMode === 'pk') this.updatePkMatch(dtRaw);
 
     this.particles.update(dt);
     this.numbers.update(dt);
@@ -1315,8 +1315,13 @@ export class GameplayScene {
         won,
         winnerId: this.winnerId,
         reason: this.netMode,
-        // 把结算原因一并下发：客户端自己推不出「时间到平局」这类结果
-        cause: this.cause,
+        // 闯关模式：把失败原因带上（客户端推不出"被谁击倒"）
+        cause: this.netMode === 'pk' ? undefined : this.cause,
+        // 自由混战：发**结构化**的结束原因，客户端按自己的视角渲染结算文案。
+        // 发预渲染好的字符串是不行的 —— 房主视角的「对手成为最后的幸存者」
+        // 会被赢家一字不差地读到（他明明赢了）。
+        pkReason: this.pkOutcome?.reason,
+        winnerName: this.pkOutcome?.winnerName,
       });
     }
     // 联机：一局打完 —— 合作模式立刻解散并清空房间（需求 26）；
@@ -1654,6 +1659,8 @@ export class GameplayScene {
       settings: this.host.save.data.settings,
       characterName: this.run.character.name,
       pk: this.netMode === 'pk',
+      // 平局判定用结构化结果，而不是去字符串里找「平局」两个字
+      pkTie: this.netMode === 'pk' && pkIsDraw(this.pkOutcome),
       net: this.isMultiplayer(),
     };
   }
@@ -2220,21 +2227,41 @@ export class GameplayScene {
     ctx.font = '600 12px Consolas, monospace';
     ctx.fillText(`${rows.length} 人`, x + w - 14, y + 17);
 
-    // 自由混战：比赛倒计时 + 人头目标（需求 27）。
-    // 没有这行字，玩家根本不知道这把要打多久、打到多少算赢。
+    // 自由混战：比赛状态（需求 28 —— 三种状态分得清清楚楚）
+    //   等齐人 → 「等待其他玩家」，比赛**还没开始**（免得以为进了空场）
+    //   倒计时 → 「准备开始 3」，双方都看得见，不会出现"一进场就结束了"
+    //   进行中 → 「剩余 m:ss」+ 人头目标
     if (pk) {
-      const left = Math.max(0, Math.ceil(this.pkTimeLeft));
-      const mm = Math.floor(left / 60);
-      const ss = left % 60;
+      const cx = x + w / 2;
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = left <= 30 ? '#ff8a6a' : 'rgba(255,212,121,0.92)';
-      ctx.font = '700 14px Consolas, monospace';
-      ctx.fillText(`剩余 ${mm}:${String(ss).padStart(2, '0')}`, x + w / 2, y + h + 16);
-      ctx.fillStyle = 'rgba(206,198,232,0.68)';
-      ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
-      ctx.fillText(`击杀 ${this.pkKillTarget} 人提前结束`, x + w / 2, y + h + 34);
+      if (this.pk.phase === 'waiting') {
+        // 人不够：把「还差几个人」写清楚，房主才知道要等谁
+        ctx.fillStyle = 'rgba(255,212,121,0.92)';
+        ctx.font = '700 13px "PingFang SC","Segoe UI",sans-serif';
+        ctx.fillText('等待玩家加入…', cx, y + h + 16);
+        ctx.fillStyle = 'rgba(206,198,232,0.62)';
+        ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
+        ctx.fillText(`比赛未开始 · ${rows.length}/${this.pk.minPlayers} 人`, cx, y + h + 34);
+      } else if (this.pk.phase === 'starting') {
+        ctx.fillStyle = '#7ef2c0';
+        ctx.font = '800 16px "PingFang SC","Segoe UI",sans-serif';
+        ctx.fillText(`准备开始 ${Math.max(1, Math.ceil(this.pk.countdown))}`, cx, y + h + 16);
+        ctx.fillStyle = 'rgba(206,198,232,0.68)';
+        ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
+        ctx.fillText(`击杀 ${this.pk.killTarget} 人提前结束`, cx, y + h + 34);
+      } else {
+        const left = Math.max(0, Math.ceil(this.pk.timeLeft));
+        const mm = Math.floor(left / 60);
+        const ss = left % 60;
+        ctx.fillStyle = left <= 30 ? '#ff8a6a' : 'rgba(255,212,121,0.92)';
+        ctx.font = '700 14px Consolas, monospace';
+        ctx.fillText(`剩余 ${mm}:${String(ss).padStart(2, '0')}`, cx, y + h + 16);
+        ctx.fillStyle = 'rgba(206,198,232,0.68)';
+        ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
+        ctx.fillText(`击杀 ${this.pk.killTarget} 人提前结束`, cx, y + h + 34);
+      }
       ctx.restore();
     }
 
@@ -2290,6 +2317,26 @@ export class GameplayScene {
 
   /** 屏幕顶部的当前目标提示（战斗房锁门 / 补给站待确认 / 传送门已开启）。 */
   private objectiveBanner(): { text: string; color: string } | null {
+    // 自由混战：比赛状态压过"消灭所有敌人"——PK 里没人关心清怪进度，
+    // 玩家要一眼看到的是"几点开打 / 打到什么程度算赢"。
+    if (this.netMode === 'pk') {
+      if (this.pk.phase === 'waiting') {
+        return {
+          text: `自由混战 · 等待玩家加入（${this.allPlayers.length}/${this.pk.minPlayers} 人）`,
+          color: 'rgba(255,212,121,0.92)',
+        };
+      }
+      if (this.pk.phase === 'starting') {
+        return { text: `准备开始 —— ${Math.max(1, Math.ceil(this.pk.countdown))}`, color: '#7ef2c0' };
+      }
+      const left = Math.max(0, Math.ceil(this.pk.timeLeft));
+      const mm = Math.floor(left / 60);
+      const ss = left % 60;
+      return {
+        text: `自由混战 · 剩余 ${mm}:${String(ss).padStart(2, '0')} · 先击杀 ${this.pk.killTarget} 人者胜`,
+        color: left <= 30 ? '#ff8a6a' : 'rgba(255,212,121,0.92)',
+      };
+    }
     // 首领房有第三种状态：门锁了，但首领还没醒（玩家点了「再准备一下」蹲在门里）。
     // 这时不能沿用"消灭所有敌人" —— 场上一个敌人都没有，玩家会以为卡关。
     if (this.node.type === 'boss' && !this.node.cleared && !this.boss && !this.pendingBossStart) {
@@ -2422,7 +2469,7 @@ export class GameplayScene {
         if (m.t === 'snapshot') this.lastSnapshot = m.s;
       });
       this.net.on('gameover', (m) => {
-        if (m.t === 'gameover') this.onNetGameover(m.won, m.winnerId, m.cause);
+        if (m.t === 'gameover') this.onNetGameover(m.won, m.winnerId, m.cause, m.pkReason, m.winnerName);
       });
     }
     this.net.on('closed', () => {
@@ -2623,8 +2670,11 @@ export class GameplayScene {
       phase: this.ended ? (this.overlay.mode === 'victory' ? 'victory' : 'dead') : 'play',
       winnerId: this.winnerId,
       // 自由混战：比赛倒计时与人头目标由房主推进，客户端只负责显示
-      matchTimeLeft: this.netMode === 'pk' ? this.pkTimeLeft : undefined,
-      killTarget: this.netMode === 'pk' ? this.pkKillTarget : undefined,
+      matchTimeLeft: this.netMode === 'pk' ? this.pk.timeLeft : undefined,
+      killTarget: this.netMode === 'pk' ? this.pk.killTarget : undefined,
+      // 阶段与准备倒计时也一起下发：客户端不跑裁判，HUD 却要显示得一模一样
+      pkPhase: this.netMode === 'pk' ? this.pk.phase : undefined,
+      matchCountdown: this.netMode === 'pk' ? this.pk.countdown : undefined,
     };
   }
 
@@ -2706,8 +2756,10 @@ export class GameplayScene {
       this.clientEnterRoom(s.roomKey);
     }
     this.run.gold = s.gold;
-    // 自由混战：倒计时以房主为准（本地不做任何推算，免得两边时钟漂移）
-    if (typeof s.matchTimeLeft === 'number') this.pkTimeLeft = s.matchTimeLeft;
+    // 自由混战：阶段与倒计时都以房主为准（本地不做任何推算，免得两边不一致）
+    if (typeof s.matchTimeLeft === 'number') {
+      this.pk.mirror(s.pkPhase ?? 'live', s.matchTimeLeft, s.matchCountdown ?? 0);
+    }
 
     // 玩家：本地玩家写回 run.player，其余写进缓存的远端 Player
     for (const ps of s.players) {
@@ -2856,39 +2908,37 @@ export class GameplayScene {
     this.host.renderer.snapCamera(this.run.player.x, this.run.player.y);
   }
 
-  private onNetGameover(won: boolean, winnerId: string | null, cause?: string): void {
+  private onNetGameover(won: boolean, winnerId: string | null, cause?: string, pkReason?: PkEndReason, winnerName?: string): void {
     if (this.ended) return;
     this.winnerId = winnerId;
     // PK 是自由混战，「won」只是**房主视角**的结果，客户端绝不能照单全收：
     //   房主赢 → 广播 won=true，客户端若采信就会陪着一起显示"胜利"；
-    //   客户端赢 → 房主发的是 won=false，客户端就会错误地显示"失败"（本 bug）。
-    // 唯一可靠的判据是「最后的幸存者是不是我」。
+    //   客户端赢 → 房主发的是 won=false，客户端就会错误地显示"失败"（老 bug）。
+    // 唯一可靠的判据是「胜者是不是我」。
     let localWon = won;
     if (this.netMode === 'pk') {
       localWon = !!winnerId && winnerId === this.localPeerId;
-      if (localWon) {
-        // 胜者永远看到这一句：房主下发的 cause 是**房主视角**的，
-        // 对赢家来说会写成"对手成为了最后的幸存者"，用不得。
-        this.cause = '你成为了最后的幸存者';
-      } else if (cause) {
-        // 房主把结算原因一起发下来了（需求 27）：优先照用 ——
-        // 「时间到 · 击杀数最高（平局）」这种结果客户端自己推不出来。
-        this.cause = cause;
-      } else if (winnerId) {
-        // 昵称优先取快照缓存；还没收到过快照时退回开局就有的 peers 名单，
-        // 否则结算界面会显示含糊的"对手"。
-        const name =
-          this.netPlayersById.get(winnerId)?.netName ??
-          this.peers.find((p) => p.id === winnerId)?.name ??
-          '对手';
-        this.cause = `${name} 成为最后的幸存者`;
-      } else {
-        this.cause = '全员阵亡';
-      }
+      // 客户端用与房主**完全相同的**函数渲染结算副标题（见 pkMatch.pkOutcomeText），
+      // 视角参数是 localPeerId —— 赢家读到的一定是"你…"，不可能读到"对手…"。
+      this.pkOutcome = {
+        winnerId,
+        winnerName: winnerName || this.nameOfPeer(winnerId),
+        reason: pkReason ?? 'lastStanding',
+        killTarget: this.pk.killTarget,
+      };
+      this.cause = pkOutcomeText(this.pkOutcome, this.localPeerId);
     } else if (cause) {
       this.cause = cause;
     }
     this.finishRun(localWon);
+  }
+
+  /** peerId → 昵称（快照缓存优先，退回开局名单，最后兜底「对手」）。 */
+  private nameOfPeer(peerId: string | null): string {
+    if (!peerId) return '对手';
+    return (
+      this.netPlayersById.get(peerId)?.netName ?? this.peers.find((p) => p.id === peerId)?.name ?? '对手'
+    );
   }
 
   /** 按阵营（= peerId）反查玩家；单机/合作里 team 不是 peerId，一律返回 null。 */
@@ -2899,65 +2949,41 @@ export class GameplayScene {
     return null;
   }
 
+  /** 合作模式的一局结束判定：全队阵亡即失败。（自由混战走 updatePkMatch。） */
   private checkNetEnd(): void {
     if (this.netRole !== 'host' || this.ended) return;
-    const alive = this.allPlayers.filter((p) => !p.dead);
-    if (this.netMode === 'pk') {
-      // ------- 比赛规则（需求 27）：3 分钟一把 · 10 人头提前结束 -------
-      // 优先级：先到人头目标者直接胜出 → 时间到按人头排名 → 最后一名幸存者。
-      const leader = this.killLeader();
-      if (leader && leader.kills >= this.pkKillTarget) {
-        this.settlePk(leader, `率先击杀 ${this.pkKillTarget} 人`);
-        return;
-      }
-      if (this.pkTimeLeft <= 0) {
-        this.settlePk(leader, leader ? `时间到 · 击杀数最高` : '时间到 · 无人击杀');
-        return;
-      }
-      if (alive.length <= 1) {
-        const winner = alive[0] ?? null;
-        this.winnerId = winner
-          ? winner === this.run.player
-            ? this.localPeerId
-            : this.peerByPlayer.get(winner) ?? null
-          : null;
-        this.cause = winner ? `${winner.netName ?? '玩家'} 成为最后的幸存者` : '全员阵亡';
-        this.finishRun(winner === this.run.player);
-      }
-    } else if (alive.length === 0) {
+    if (this.netMode === 'pk') return;
+    if (this.allPlayers.every((p) => p.dead)) {
       this.cause = '全队阵亡';
       this.finishRun(false);
     }
   }
 
-  /** 本局人头最高的玩家（并列 / 全 0 时返回 null，即平局）。 */
-  private killLeader(): Player | null {
-    let best: Player | null = null;
-    let bestKills = 0;
-    let tied = false;
-    for (const p of this.allPlayers) {
-      if (p.kills > bestKills) {
-        bestKills = p.kills;
-        best = p;
-        tied = false;
-      } else if (p.kills === bestKills && bestKills > 0) {
-        tied = true;
-      }
-    }
-    if (!best || bestKills <= 0) return null;
-    return tied ? null : best;
+  /** 把玩家拍平成裁判要的纯数据（身份 = peerId，本地玩家即 localPeerId）。 */
+  private pkFighters(): PkFighter[] {
+    return this.allPlayers.map((p) => ({
+      id: p === this.run.player ? this.localPeerId : this.peerByPlayer.get(p) ?? 'peer',
+      name: p.netName ?? '玩家',
+      alive: !p.dead,
+      kills: p.kills,
+    }));
   }
 
-  /** 自由混战结算：把胜者换算成 peerId 并落定胜负。 */
-  private settlePk(winner: Player | null, reason: string): void {
-    if (winner) {
-      this.winnerId = winner === this.run.player ? this.localPeerId : this.peerByPlayer.get(winner) ?? null;
-      this.cause = `${winner.netName ?? '玩家'} · ${reason}`;
-    } else {
-      this.winnerId = null;
-      this.cause = `${reason}（平局）`;
-    }
-    this.finishRun(winner === this.run.player);
+  /**
+   * 自由混战：推进一步比赛裁判（只有房主跑）。
+   *
+   * 全部规则都在 `PkMatch` 里 —— 「人数不够不开赛」也归它管，
+   * 所以单人建房不会再一进门就弹出「PK 胜利」（真机 bug，需求 28 重写）。
+   */
+  private updatePkMatch(dtRaw: number): void {
+    if (this.netRole !== 'host' || this.ended) return;
+    const outcome = this.pk.update(dtRaw, this.pkFighters());
+    if (!outcome) return;
+    this.pkOutcome = outcome;
+    this.winnerId = outcome.winnerId;
+    // 结算副标题按**本地视角**渲染：赢家永远读到"你…"。
+    this.cause = pkOutcomeText(outcome, this.localPeerId);
+    this.finishRun(outcome.winnerId !== null && outcome.winnerId === this.localPeerId);
   }
 
   /**

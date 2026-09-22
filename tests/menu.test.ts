@@ -230,13 +230,39 @@ describe('主菜单右侧面板', () => {
     expect(joined).not.toContain('空位 5');
   });
 
+  test('自由混战房间只有自己一个人 → 「开始」置灰并写明还差人（真机 bug 的入口）', () => {
+    const state = createMenuState();
+    toRoom(state, 'pk');
+    state.mode = 'multi'; // 房间界面（大厅页）才画 mm-start
+    state.lobby.members = [state.lobby.members[0]!]; // 只有房主
+    const btn = buildMenuButtons(state).find((b) => b.id === 'mm-start')!;
+    expect(btn.enabled).toBe(false);
+    expect(btn.label).toBe('等待玩家加入（1/2 人）');
+
+    // 补一个人 → 可以开
+    toRoom(state, 'pk');
+    state.mode = 'multi';
+    const ready = buildMenuButtons(state).find((b) => b.id === 'mm-start')!;
+    expect(ready.enabled).toBe(true);
+    expect(ready.label).toBe('开始比赛');
+
+    // 合作模式不受这条限制（一个人也能进去打）
+    const coop = createMenuState();
+    toRoom(coop, 'coop');
+    coop.mode = 'multi';
+    coop.lobby.members = [coop.lobby.members[0]!];
+    const coopBtn = buildMenuButtons(coop).find((b) => b.id === 'mm-start')!;
+    expect(coopBtn.enabled).toBe(true);
+    expect(coopBtn.label).toBe('开始远征');
+  });
+
   test('房间内：PK 模式文案不同', () => {
     const state = createMenuState();
     toRoom(state, 'pk');
     const joined = render(state)
       .map((t) => t.text)
       .join('|');
-    expect(joined).toContain('自由混战 · 3 分钟 · 10 杀');
+    expect(joined).toContain('自由混战 · 3 分钟 · 10 杀 · 至少 2 人');
     expect(joined).not.toContain('合作闯关');
   });
 
@@ -561,7 +587,7 @@ describe('联机大厅：模式卡说明文字不溢出（需求16-3）', () => 
 
   test('混战卡说明文字水平居中在卡片内', () => {
     const texts = render(lobbyState('pk'));
-    const desc = '3 分钟一把，先击杀 10 人者胜；互相可伤害，阵亡后可观战';
+    const desc = '3 分钟一把，先击杀 10 人者胜；至少 2 人才能开赛，互相可伤害';
     const lines = texts.filter((t) => desc.includes(t.text) && t.text.length > 0);
     expect(lines.length).toBeGreaterThan(0);
     // 混战卡：x=650 w=360 → 中心 830

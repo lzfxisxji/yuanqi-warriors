@@ -12,7 +12,7 @@
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EventBus } from '../src/core/eventbus';
 import { Input } from '../src/core/input';
-import { PK_KILL_TARGET, PK_MATCH_SECONDS, ROOM_H, ROOM_W } from '../src/data/config';
+import { PK_KILL_TARGET, PK_MATCH_SECONDS, PK_MIN_PLAYERS, ROOM_H, ROOM_W } from '../src/data/config';
 import { getEnemyDef } from '../src/data/enemies';
 import { Enemy } from '../src/entities/enemy';
 import type { Player } from '../src/entities/player';
@@ -290,6 +290,27 @@ function makeNetScene(
   return { host, scene };
 }
 
+/** 裁判的私有状态（测试要观测阶段 / 直接改剩余时间）。 */
+interface PkProbe {
+  pk: { phase: string; timeLeft: number; countdown: number; killTarget: number };
+}
+
+function pkProbe(scene: GameplayScene): PkProbe {
+  return scene as unknown as PkProbe;
+}
+
+/**
+ * 让自由混战真正开打：等齐人 → 3 秒准备倒计时 → live。
+ *
+ * 只跑 3 帧模拟（把倒计时直接摁到 0），免得为了"等 3 秒"白跑 200 帧把玩家喂给怪物。
+ */
+function kickoff(scene: GameplayScene): void {
+  runFrames(scene, 1); // waiting → starting
+  pkProbe(scene).pk.countdown = 0.001;
+  runFrames(scene, 2); // → live
+  if (pkProbe(scene).pk.phase !== 'live') throw new Error(`比赛没进入 live（当前 ${pkProbe(scene).pk.phase}）`);
+}
+
 /** 让一名玩家当场阵亡（走真实扣血入口，不走 dodge）。 */
 function slay(player: Player): void {
   player.mods.dodgeAdd = -1;
@@ -381,16 +402,22 @@ describe('联机 PK：胜负必须按「本地视角」判定，而不是照抄�
     scene.dispose();
   });
 
-  test('PK 全员阵亡（无胜者）—— 一律判负，不能凭空判胜', () => {
-    const net = fakeNet();
-    const { scene } = makeNetScene('pk', 'client', 'p-guest', net);
+  test('PK 无胜者（全员阵亡 / 时间到平局）—— 一律判负，不能凭空判胜', () => {
+    const wipeNet = fakeNet();
+    const wipe = makeNetScene('pk', 'client', 'p-guest', wipeNet);
+    wipeNet.emit({ t: 'gameover', won: true, winnerId: null, reason: 'pk', pkReason: 'wipeout' });
+    expect(wipe.scene.overlayMode).toBe('dead');
+    expect((wipe.scene as unknown as { overlay: OverlayState }).overlay.death?.cause).toBe(
+      '全员阵亡 · 无人幸存',
+    );
+    wipe.scene.dispose();
 
-    net.emit({ t: 'gameover', won: true, winnerId: null, reason: 'pk' });
-
-    expect(scene.overlayMode).toBe('dead');
-    const overlay = (scene as unknown as { overlay: OverlayState }).overlay;
-    expect(overlay.death?.cause).toBe('全员阵亡');
-    scene.dispose();
+    const drawNet = fakeNet();
+    const draw = makeNetScene('pk', 'client', 'p-guest', drawNet);
+    drawNet.emit({ t: 'gameover', won: true, winnerId: null, reason: 'pk', pkReason: 'timeUp' });
+    expect(draw.scene.overlayMode).toBe('dead');
+    expect((draw.scene as unknown as { overlay: OverlayState }).overlay.death?.cause).toContain('平局');
+    draw.scene.dispose();
   });
 
   test('合作模式不受影响：房主的 won 就是全队的 won', () => {
@@ -437,7 +464,7 @@ describe('联机 PK：房主侧的判定与广播内容', () => {
   test('房主阵亡 → 判定胜者是对手，并广播 won=false + 对手 id', () => {
     const net = fakeNet();
     const { scene } = makeNetScene('pk', 'host', 'p-host', net);
-    runFrames(scene, 2);
+    kickoff(scene);
 
     slay(scene.state.player);
     runFrames(scene, 3);
@@ -453,7 +480,7 @@ describe('联机 PK：房主侧的判定与广播内容', () => {
   test('端到端：房主阵亡 → 广播经中继 → 客户端结算为胜利', () => {
     const hostNet = fakeNet();
     const hostSide = makeNetScene('pk', 'host', 'p-host', hostNet);
-    runFrames(hostSide.scene, 2);
+    kickoff(hostSide.scene);
     slay(hostSide.scene.state.player);
     runFrames(hostSide.scene, 3);
     expect(hostSide.scene.overlayMode).toBe('dead');
@@ -542,7 +569,7 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
   test('先到 10 人头即提前结束，且胜者是人头达标的那一位', () => {
     const net = fakeNet();
     const { scene } = makeNetScene('pk', 'host', 'p-host', net);
-    runFrames(scene, 2);
+    kickoff(scene);
 
     scene.state.player.kills = PK_KILL_TARGET;
     runFrames(scene, 3);
@@ -559,7 +586,7 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
   test('差一个人头不算提前结束 —— 门槛是「达到」而不是「接近」', () => {
     const net = fakeNet();
     const { scene } = makeNetScene('pk', 'host', 'p-host', net);
-    runFrames(scene, 2);
+    kickoff(scene);
 
     scene.state.player.kills = PK_KILL_TARGET - 1;
     runFrames(scene, 3);
@@ -571,10 +598,10 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
   test('倒计时归零 → 按人头数排名判定胜负（不再只看"活到最后"）', () => {
     const net = fakeNet();
     const { scene } = makeNetScene('pk', 'host', 'p-host', net);
-    runFrames(scene, 2);
+    kickoff(scene);
 
     scene.state.player.kills = 4; // 房主 4 杀，对手 0 杀
-    (scene as unknown as { pkTimeLeft: number }).pkTimeLeft = 0.01;
+    pkProbe(scene).pk.timeLeft = 0.01;
     runFrames(scene, 3);
 
     expect(scene.overlayMode).toBe('victory');
@@ -586,6 +613,7 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
   test('倒计时一路递减，并随快照下发给客户端（两边时钟不各算各的）', () => {
     const hostNet = fakeNet();
     const hostSide = makeNetScene('pk', 'host', 'p-host', hostNet);
+    kickoff(hostSide.scene);
     runFrames(hostSide.scene, 40); // 约 0.67s
 
     const snaps = hostNet.sent.filter((m) => m.t === 'snapshot');
@@ -593,10 +621,11 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
     const last = snaps[snaps.length - 1]!;
     if (last.t !== 'snapshot') throw new Error('unreachable');
     expect(last.s.killTarget).toBe(PK_KILL_TARGET);
+    expect(last.s.pkPhase).toBe('live');
     expect(last.s.matchTimeLeft).toBeLessThan(PK_MATCH_SECONDS);
     expect(last.s.matchTimeLeft).toBeGreaterThan(PK_MATCH_SECONDS - 5);
 
-    // 客户端：照快照画倒计时 + 目标
+    // 客户端：照快照画倒计时 + 目标（阶段也照房主抄，不自己算）
     const sink: string[] = [];
     const guestNet = fakeNet();
     const guestSide = makeNetScene('pk', 'client', 'p-guest', guestNet, 424242, undefined, sink);
@@ -609,12 +638,33 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
     guestSide.scene.dispose();
   });
 
+  test('「等待玩家加入」阶段：HUD 与顶部提示都要说清比赛还没开始', () => {
+    const net = fakeNet();
+    const sink: string[] = [];
+    // 只有房主自己的房间
+    const solo = new GameplayScene(makeHost(undefined, sink), 'lulu', 424242, {
+      client: net.client,
+      role: 'host',
+      mode: 'pk',
+      localPeerId: 'p-host',
+      roomCode: 'PK01',
+      peers: [HOST_PEER],
+    });
+    runFrames(solo, 3);
+
+    expect(pkProbe(solo).pk.phase).toBe('waiting');
+    const text = sink.join('|');
+    expect(text).toContain('等待玩家加入');
+    expect(text).toContain(`比赛未开始 · 1/${PK_MIN_PLAYERS} 人`);
+    solo.dispose();
+  });
+
   test('时间到人头打平 → 判平局，且原因随 gameover 一起下发给客户端', () => {
     const net = fakeNet();
     const { scene } = makeNetScene('pk', 'host', 'p-host', net);
-    runFrames(scene, 2);
+    kickoff(scene);
 
-    (scene as unknown as { pkTimeLeft: number }).pkTimeLeft = 0.01;
+    pkProbe(scene).pk.timeLeft = 0.01;
     runFrames(scene, 3);
 
     expect(scene.overlayMode).toBe('dead');
@@ -622,13 +672,13 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
     expect(over.length).toBe(1);
     if (over[0]?.t !== 'gameover') throw new Error('unreachable');
     expect(over[0].winnerId).toBe(null);
-    expect(over[0].cause).toContain('平局');
+    expect(over[0].pkReason).toBe('timeUp');
 
-    // 客户端照房主给的原因显示，而不是自己猜成"全员阵亡"
+    // 客户端用同样的结构化原因渲染自己的视角（绝不照抄房主的字符串）
     const sink: string[] = [];
     const guestNet = fakeNet();
     const guestSide = makeNetScene('pk', 'client', 'p-guest', guestNet, 424242, undefined, sink);
-    guestNet.emit({ t: 'gameover', won: false, winnerId: null, reason: 'pk', cause: over[0].cause });
+    guestNet.emit({ t: 'gameover', won: false, winnerId: null, reason: 'pk', pkReason: over[0].pkReason });
     runFrames(guestSide.scene, 2);
 
     expect(sink.join('|')).toContain('PK 平局');
@@ -638,10 +688,31 @@ describe('自由混战：比赛时长与人头目标（需求 27）', () => {
     guestSide.scene.dispose();
   });
 
+  test('回归（真机 bug）：PK 房间只有自己一个人时，绝不能一进门就判「最后的幸存者」', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const host = makeHost(log);
+    // 只有房主自己的房间 —— 玩家在 Render 上就是这样单人点了「开始」
+    const scene = new GameplayScene(host, 'lulu', 424242, {
+      client: net.client,
+      role: 'host',
+      mode: 'pk',
+      localPeerId: 'p-host',
+      roomCode: 'PK01',
+      peers: [HOST_PEER],
+    });
+    runFrames(scene, 30); // 半秒；老代码在第 1 帧就直接结算了
+
+    expect(scene.overlayMode).toBe('none');
+    expect(log.ended).toEqual([]);
+    expect(net.sent.filter((m) => m.t === 'gameover')).toEqual([]);
+    scene.dispose();
+  });
+
   test('人头归属：最后一下是谁打的就算谁的（否则 2 人局全记在房主头上）', () => {
     const net = fakeNet();
     const { scene } = makeNetScene('pk', 'host', 'p-host', net);
-    runFrames(scene, 2);
+    kickoff(scene);
 
     const sc = scene as unknown as {
       enemies: Enemy[];
@@ -673,7 +744,7 @@ describe('自由混战：房间留到玩家主动关闭，「再来一次」重�
     const sink: string[] = [];
     const { scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, sink);
 
-    runFrames(scene, 2);
+    kickoff(scene);
     slay(scene.state.player);
     runFrames(scene, 3);
     expect(scene.overlayMode).toBe('dead');
@@ -693,7 +764,7 @@ describe('自由混战：房间留到玩家主动关闭，「再来一次」重�
     const net = fakeNet();
     const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
     const { host, scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, []);
-    runFrames(scene, 2);
+    kickoff(scene);
     slay(scene.state.player);
     runFrames(scene, 3);
 
@@ -724,7 +795,7 @@ describe('自由混战：房间留到玩家主动关闭，「再来一次」重�
     const { scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log);
 
     // 对局中：不接受重开请求，免得有人在中途把局强行重置
-    runFrames(scene, 2);
+    kickoff(scene);
     net.emit({ t: 'rematchRequest', from: 'p-guest' });
     runFrames(scene, 1);
     expect(net.sent.filter((m) => m.t === 'rematch').length).toBe(0);
@@ -741,7 +812,7 @@ describe('自由混战：房间留到玩家主动关闭，「再来一次」重�
     const net = fakeNet();
     const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
     const { host, scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, []);
-    runFrames(scene, 2);
+    kickoff(scene);
     slay(scene.state.player);
     runFrames(scene, 3);
 

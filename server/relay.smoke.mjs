@@ -107,11 +107,12 @@ try {
   }
   ok('非房主 snapshot 被忽略', !leaked);
 
-  // 7) 结算广播
-  a.send({ t: 'gameover', won: true, winnerId: null, reason: 'coop' });
+  // 7) 结算广播（含 PK 的结构化结果，客户端要靠它渲染自己视角的文案）
+  a.send({ t: 'gameover', won: true, winnerId: null, reason: 'coop', pkReason: 'killTarget', winnerName: '房主' });
   const overA = await a.next();
   const overB = await b.next();
   ok('gameover 广播（含房主）', overA.t === 'gameover' && overB.t === 'gameover' && overB.won === true);
+  ok('gameover 透传 PK 结果字段', overB.pkReason === 'killTarget' && overB.winnerName === '房主');
 
   // 8) 加入已开始房间应报错
   const c = client();
@@ -127,6 +128,31 @@ try {
   ok('普通玩家离开 → peerLeft', left.t === 'peerLeft');
 
   a.ws.close();
+
+  // 9.5) 自由混战单人房必须开不了（需求 28 真机 bug 的入口）
+  //      一个人进去 = 场上只有 1 人 → 老代码第 1 帧判「最后的幸存者」→ 一进门「PK 胜利」。
+  const solo = client();
+  await solo.open();
+  solo.send({ t: 'create', mode: 'pk', name: 'Solo', characterId: 'wolfshade', color: '#5cc8ff' });
+  const soloRoom = await solo.next();
+  solo.send({ t: 'start' });
+  const soloErr = await solo.next();
+  ok('PK 单人房拒绝开局（自由混战至少 2 人）', soloErr.t === 'error' && soloErr.message.includes('2'));
+
+  const late = client();
+  await late.open();
+  late.send({ t: 'join', code: soloRoom.code, name: 'Late', characterId: 'sting', color: '#ff7ae0' });
+  const lateJoined = await late.next();
+  ok('被拦下后房间未锁死，仍可加入', lateJoined.t === 'joined');
+  await solo.next(); // peerJoined
+  solo.send({ t: 'start' });
+  const soloStart = await solo.next();
+  await late.next(); // 同一个 start 也广播给了房内其他人
+  ok('补够 2 人后 PK 正常开局', soloStart.t === 'start' && soloStart.mode === 'pk');
+  solo.send({ t: 'leave' });
+  const soloClosed = await late.next();
+  ok('（收尾）房主离开 → 房内其余人收到 closed', soloClosed.t === 'closed');
+  late.ws.close();
 
   // 10) 房主离开 → 其余成员收到 closed；且 PK 阵营 = 各自 peerId
   const e1 = client();

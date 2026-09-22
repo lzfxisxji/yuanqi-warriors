@@ -107,6 +107,11 @@ export interface OverlayContext {
   /** 本局是否 PK 自由混战（决定结算界面的抬头文案）。 */
   pk?: boolean;
   /**
+   * PK 本局是否为平局（时间到人头打平 / 全员阵亡）。
+   * 由场景按结构化结果给出 —— 别再去 `death.cause` 里找「平局」两个字，文案一改就失效。
+   */
+  pkTie?: boolean;
+  /**
    * 本局是否是联机局。联机一局打完会**自动解散房间**（需求 26），
    * 结算面板要如实告诉玩家「房间没了」，否则他会以为是掉线。
    */
@@ -878,7 +883,7 @@ function drawSummary(
   const won = overlay.mode === 'victory';
   const pk = oc.pk === true;
   // 时间到人头打平：两边都算"没赢"，但抬头写成「PK 失败」会说不过去。
-  const tie = pk && (overlay.death?.cause ?? '').includes('平局');
+  const tie = pk && oc.pkTie === true;
   drawPanel(ctx, 340, 96, 600, 540, { radius: 18 });
   drawHeading(
     ctx,

@@ -1,6 +1,6 @@
 /** 大厅界面：主菜单、角色选择、图鉴（武器 / 敌人）、设置入口。 */
 import { TAU, clamp } from '../core/math';
-import { MAX_PLAYERS, ROOM_CODE_LEN } from '../data/config';
+import { MAX_PLAYERS, PK_MIN_PLAYERS, ROOM_CODE_LEN } from '../data/config';
 import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../data/characters';
 import { WEAPONS, getWeaponDef, type WeaponDef } from '../data/weapons';
 import { ENEMIES, getEnemyDef, type EnemyDef } from '../data/enemies';
@@ -315,7 +315,25 @@ export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[
         buttons.push({ id: 'mm-join', label: '加入房间', x: 430, y: 486, w: 420, h: 50, style: 'primary' });
         buttons.push({ id: 'mm-back', label: '返回大厅', x: 540, y: 544, w: 200, h: 44, style: 'ghost' });
       } else {
-        buttons.push({ id: 'mm-start', label: lb.isHost ? '开始远征' : '等待房主开始…', x: 430, y: 496, w: 420, h: 58, style: 'accent', enabled: lb.isHost });
+        // 自由混战至少 2 人：房间只有自己时**不给点**（中继也会拦），
+        // 否则单人进去 = 场上只有 1 人 = 一进门就「PK 胜利」（真机 bug）。
+        const needMore = lb.mode === 'pk' && lb.members.length < PK_MIN_PLAYERS;
+        buttons.push({
+          id: 'mm-start',
+          label: !lb.isHost
+            ? '等待房主开始…'
+            : needMore
+              ? `等待玩家加入（${lb.members.length}/${PK_MIN_PLAYERS} 人）`
+              : lb.mode === 'pk'
+                ? '开始比赛'
+                : '开始远征',
+          x: 430,
+          y: 496,
+          w: 420,
+          h: 58,
+          style: 'accent',
+          enabled: lb.isHost && !needMore,
+        });
         buttons.push({ id: 'mm-leave', label: '离开房间', x: 540, y: 566, w: 200, h: 46, style: 'danger' });
       }
       break;
@@ -724,7 +742,7 @@ function drawRoomPanel(ctx: CanvasRenderingContext2D, state: MenuState, time: nu
   ctx.textAlign = 'left';
   ctx.fillStyle = lb.mode === 'coop' ? UI_COLORS.mint : UI_COLORS.danger;
   ctx.font = '700 14px "PingFang SC","Segoe UI",sans-serif';
-  ctx.fillText(lb.mode === 'coop' ? '合作闯关 · 友伤关闭' : '自由混战 · 3 分钟 · 10 杀', left, 258);
+  ctx.fillText(lb.mode === 'coop' ? '合作闯关 · 友伤关闭' : '自由混战 · 3 分钟 · 10 杀 · 至少 2 人', left, 258);
   ctx.textAlign = 'right';
   ctx.fillStyle = UI_COLORS.text;
   ctx.font = '700 14px "Segoe UI",monospace';
@@ -826,7 +844,7 @@ function drawLobby(
     const desc =
       b.id === 'mm-mode-coop'
         ? '共享同一份地牢，敌人一起打，无友伤'
-        : '3 分钟一把，先击杀 10 人者胜；互相可伤害，阵亡后可观战';
+        : '3 分钟一把，先击杀 10 人者胜；至少 2 人才能开赛，互相可伤害';
     // 注意：这里的 textAlign 是 'center'（跟着标题设的），wrapText 内部就是直接 fillText，
     // 所以 x 必须传**卡片水平中心**。传卡片左内边距的话，整行会以那个点为居中向两侧溢出卡片外。
     wrapText(ctx, desc, b.x + b.w / 2, b.y + 82, b.w - 60, 18);

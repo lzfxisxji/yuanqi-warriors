@@ -7,6 +7,8 @@
  * 所有结构都是纯数据，方便单元测试做序列化往返校验。
  */
 
+import type { PkEndReason, PkPhase } from './pkMatch';
+
 export type NetMode = 'coop' | 'pk';
 
 /** 一名玩家的联网身份（大厅与对局通用）。 */
@@ -146,6 +148,15 @@ export interface Snapshot {
   matchTimeLeft?: number;
   /** 自由混战：提前结束比赛需要的人头数。 */
   killTarget?: number;
+  /**
+   * 自由混战：比赛阶段（`waiting` 等齐人 / `starting` 开赛倒计时 / `live` 进行中）。
+   *
+   * 客户端不跑裁判，只把房主的阶段照搬到 HUD 上 —— 否则会出现
+   * "房主还在等对手进场，客户端却已经在倒数"这种两边不一致。
+   */
+  pkPhase?: PkPhase;
+  /** 自由混战：开赛倒计时剩余秒数（仅 `starting` 阶段有意义）。 */
+  matchCountdown?: number;
 }
 
 // ---------------------------------------------------------------- 消息
@@ -161,7 +172,18 @@ export type ClientMsg =
   /** 房主 → 服务器：把一次强化选择推送给指定玩家。 */
   | { t: 'upgradeChoice'; to: string; options: string[] }
   /** 房主 → 服务器：对局结束（胜利 / 失败 / PK 胜者）。 */
-  | { t: 'gameover'; won: boolean; winnerId: string | null; reason: string; cause?: string }
+  | {
+      t: 'gameover';
+      won: boolean;
+      winnerId: string | null;
+      reason: string;
+      /** 闯关模式的失败原因（`被 XX 击倒在第 N 层`）。 */
+      cause?: string;
+      /** 自由混战：结束原因。结算文案由两边各自按本地视角渲染（见 pkOutcomeText）。 */
+      pkReason?: PkEndReason;
+      /** 自由混战：胜者昵称（败者要看到"XX 成为最后的幸存者"）。 */
+      winnerName?: string;
+    }
   /**
    * 房主 → 服务器：**再开一局**（自由混战结算页的「再来一次」）。
    *
@@ -187,7 +209,15 @@ export type ServerMsg =
   /** 房主收：某客户端回传的强化选择（带发送者 id）。 */
   | { t: 'upgradePick'; from: string; id: string }
   | { t: 'upgradeChoice'; options: string[] }
-  | { t: 'gameover'; won: boolean; winnerId: string | null; reason: string; cause?: string }
+  | {
+      t: 'gameover';
+      won: boolean;
+      winnerId: string | null;
+      reason: string;
+      cause?: string;
+      pkReason?: PkEndReason;
+      winnerName?: string;
+    }
   /** 房主收：有客户端请求「再来一次」（自由混战）。 */
   | { t: 'rematchRequest'; from: string }
   | { t: 'error'; message: string }

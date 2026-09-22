@@ -199,6 +199,13 @@ wss.on('connection', (ws) => {
       case 'start': {
         if (!room || room.hostId !== peerId) return;
         if (room.started) return;
+        // 自由混战是"人对人"，一个人开不了局。以前房主单人点开始也能进，
+        // 进去以后裁判看到"场上只有 1 人"直接判他最后的幸存者 —— 一进门就「PK 胜利」。
+        // 门禁放在中继（权威侧），前端按钮状态被绕过也拦得住。
+        if (room.mode === 'pk' && room.peers.size < 2) {
+          send(ws, { t: 'error', message: '自由混战至少需要 2 名玩家，把房间号发给朋友吧' });
+          return;
+        }
         room.started = true;
         const peers = peerList(room);
         const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
@@ -264,9 +271,12 @@ wss.on('connection', (ws) => {
           won: !!msg.won,
           winnerId: msg.winnerId ?? null,
           reason: String(msg.reason || ''),
-          // 结算原因（例：`率先击杀 10 人`）：客户端照它显示结算副标题，
-          // 否则只能自己瞎猜（平局 / 时间到 都会被写成"全员阵亡"）。
+          // 闯关模式的失败原因（例：`被 熔核·渊心 击倒在第 2 层`）。
           cause: String(msg.cause || ''),
+          // 自由混战：只转发**结构化**的结束原因 + 胜者昵称，文案由各端
+          // 按自己的视角渲染（赢家永远读到"你…"，见 pkOutcomeText）。
+          pkReason: msg.pkReason,
+          winnerName: String(msg.winnerName || ''),
         });
         break;
       }
