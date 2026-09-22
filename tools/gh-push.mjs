@@ -49,79 +49,138 @@ if (!repo) {
 }
 
 const HEAD = gitText(['rev-parse', 'HEAD']);
-const BASE = process.argv[2] || ghJson(`/repos/${repo}/git/ref/heads/main`).object.sha;
+const DRY = process.argv.includes('--dry');
+const BASE = (process.argv[2] && process.argv[2] !== '--dry')
+  ? process.argv[2]
+  : ghJson(`/repos/${repo}/git/ref/heads/main`).object.sha;
 
 if (BASE === HEAD) {
   console.log(`远端已经是最新（${HEAD}），无需推送。`);
   process.exit(0);
 }
 
-// 远端 base 必须存在于本地对象库，否则无法算差量。
-// 注意：沙箱会拦住 tracking ref 的写入（refs/remotes/origin/main 建不出来），
-// 但 fetch 仍然会把对象下载下来并写进 FETCH_HEAD —— 所以只看对象是否存在，不看 ref。
+// 远端 base 是否在本地对象库里。
+// 注意：本机 `git cat-file -e` / `git fetch` / `git push` 都会挂死（代理拦 git 传输，
+// 对象写操作会触网），所以这里用 `git rev-parse --quiet --verify`（纯本地、秒回）判断。
+// base 不在本地时不再尝试 fetch，而是改走 API 比对两棵 tree 来算差量。
 const hasBase = () => {
   try {
-    git(['cat-file', '-e', `${BASE}^{commit}`]);
+    git(['rev-parse', '--quiet', '--verify', `${BASE}^{commit}`]);
     return true;
   } catch {
     return false;
   }
 };
-if (!hasBase()) {
-  console.log(`本地缺少远端 base ${BASE.slice(0, 8)}，自动 fetch...`);
-  try {
-    git(['fetch', 'origin', 'main'], { stdio: 'pipe' });
-  } catch (e) {
-    // fetch 可能因写入 ref 失败而返回非 0，但对象通常已经下载成功，继续用对象存在性判断
-    if (!hasBase()) throw e;
-  }
-  if (!hasBase()) {
-    throw new Error(`本地缺少远端 base commit ${BASE}，请先 git fetch origin main`);
-  }
-  console.log('fetch 完成。');
-}
+const baseLocal = hasBase();
 
-// ---- 差量文件列表（-z 避免中文路径被引号转义） ----
-const raw = git(['diff', '--name-status', '-z', BASE, HEAD], { encoding: 'utf8' });
-const parts = raw.split('\0').filter(Boolean);
-const changes = [];
-for (let i = 0; i < parts.length; ) {
-  const status = parts[i++];
-  const p = parts[i++];
-  if (status.startsWith('R') || status.startsWith('C')) {
-    const p2 = parts[i++];
-    changes.push({ status: status[0], path: p2, from: p });
-  } else {
-    changes.push({ status: status[0], path: p });
+// base tree 的文件清单（仅在 base 不在本地时通过 API 取，供上传阶段「沿用远端 blob」用）
+let baseFiles = {};
+
+// ---- 差量文件列表 ----
+// base 在本地：直接 git diff（最快、最准）。
+// base 不在本地（本机无法 fetch）：用 GitHub API 比对 base tree 与本地 HEAD tree。
+function localChanges() {
+  const raw = git(['diff', '--name-status', '-z', BASE, HEAD], { encoding: 'utf8' });
+  const parts = raw.split('\0').filter(Boolean);
+  const out = [];
+  for (let i = 0; i < parts.length; ) {
+    const status = parts[i++];
+    const p = parts[i++];
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const p2 = parts[i++];
+      out.push({ status: status[0], path: p2, from: p });
+    } else {
+      out.push({ status: status[0], path: p });
+    }
+  }
+  return out;
+}
+function apiChanges() {
+  const baseTreeSha = ghJson(`/repos/${repo}/git/commits/${BASE}`).tree.sha;
+  const headTreeSha = gitText(['rev-parse', `HEAD^{tree}`]);
+  for (const e of ghJson(`/repos/${repo}/git/trees/${baseTreeSha}?recursive=1`).tree) {
+    if (e.type === 'blob') baseFiles[e.path] = e.sha;
+  }
+  const headFiles = {};
+  for (const line of git(['ls-tree', '-r', HEAD], { encoding: 'utf8' }).split('\n')) {
+    if (!line.trim()) continue;
+    const m = line.match(/^\d+\s+\w+\s+(\S+)\t(.+)$/);
+    if (m) headFiles[m[2]] = m[1];
+  }
+  const out = [];
+  const all = new Set([...Object.keys(baseFiles), ...Object.keys(headFiles)]);
+  for (const p of all) {
+    const b = baseFiles[p];
+    const h = headFiles[p];
+    if (b && !h) out.push({ status: 'D', path: p });
+    else if (!b && h) out.push({ status: 'A', path: p });
+    else if (b !== h) out.push({ status: 'M', path: p });
+  }
+  return out;
+}
+const changes = baseLocal ? localChanges() : apiChanges();
+
+/**
+ * 读本地 HEAD 的 blob 内容（二进制安全）。
+ * 受限环境是 blobless 克隆：缺失的 blob 走网络会被代理挂死，
+ * 所以这里加 8s 超时，读不到就返回 null，由调用方「沿用远端 blob」避免误改线上。
+ */
+function readLocalBlob(path) {
+  try {
+    return git(['cat-file', 'blob', `${HEAD}:${path}`], { timeout: 8000 });
+  } catch {
+    return null;
   }
 }
-console.log(`仓库: ${repo}\nbase: ${BASE}\nhead: ${HEAD}\n变更文件: ${changes.length}`);
+function modeForPath(path) {
+  try {
+    const m = gitText(['ls-tree', HEAD, '--', path]).split(/\s+/)[0];
+    return m || '100644';
+  } catch {
+    return '100644';
+  }
+}
+console.log(`仓库: ${repo}\nbase: ${BASE}${baseLocal ? '' : ' (走 API 算差量)'} \nhead: ${HEAD}\n变更文件: ${changes.length}`);
 if (!changes.length) {
   console.log('代码内容无变化，仅 commit 元数据不同；将直接建空 tree 提交。');
+}
+if (DRY) {
+  console.log('[dry] 仅打印变更，未推送：');
+  for (const c of changes) console.log(`  ${c.status} ${c.path}`);
+  process.exit(0);
 }
 
 // ---- 逐文件建 blob ----
 const treeEntries = [];
 for (const c of changes) {
   if (c.status === 'D') {
-    treeEntries.push({ path: c.path, mode: '100644', type: 'blob', sha: null });
-    console.log(`  D ${c.path}`);
+    // 删除：本地 blobless 克隆无法确认是否真删，为安全沿用远端同名 blob（不删），
+    // 避免误删线上资源。确需删除时请在本机完整克隆后推送。
+    const baseSha = baseFiles[c.path];
+    if (baseSha) {
+      treeEntries.push({ path: c.path, mode: modeForPath(c.path), type: 'blob', sha: baseSha });
+      console.log(`  ~D ${c.path} (沿用远端 blob，本地不可读，不删除)`);
+    } else {
+      treeEntries.push({ path: c.path, mode: '100644', type: 'blob', sha: null });
+      console.log(`  D ${c.path}`);
+    }
     continue;
   }
-  // 读模式与内容（二进制安全）
-  let mode;
-  try {
-    mode = gitText(['ls-tree', HEAD, '--', c.path]).split(/\s+/)[0];
-  } catch {
-    mode = '100644';
+  const buf = readLocalBlob(c.path);
+  if (!buf) {
+    // 本地读不到 blob（blobless 克隆）：沿用远端同名 blob，不重新上传、不误改线上。
+    const baseSha = baseFiles[c.path];
+    if (baseSha) {
+      treeEntries.push({ path: c.path, mode: modeForPath(c.path), type: 'blob', sha: baseSha });
+      console.log(`  ~ ${c.status} ${c.path} (本地无 blob，沿用远端)`);
+    }
+    continue;
   }
-  if (!mode) mode = '100644';
-  const buf = git(['cat-file', 'blob', `${HEAD}:${c.path}`]);
   const blob = ghJson(`/repos/${repo}/git/blobs`, 'POST', {
     content: buf.toString('base64'),
     encoding: 'base64',
   });
-  treeEntries.push({ path: c.path, mode, type: 'blob', sha: blob.sha });
+  treeEntries.push({ path: c.path, mode: modeForPath(c.path), type: 'blob', sha: blob.sha });
   console.log(`  ${c.status} ${c.path} -> ${blob.sha.slice(0, 8)} (${Math.round(buf.length / 1024)} KB)`);
 }
 
