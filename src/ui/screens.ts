@@ -476,8 +476,9 @@ export function drawMenu(
       drawLobby(ctx, state, buttons, hoverId, time);
       break;
   }
-  // 主菜单右侧面板已展示房间信息，其余页面用右上角徽标兜底
-  if (state.lobby.code && state.mode !== 'main' && state.mode !== 'multi') {
+  // 其余页面用右上角徽标兜底；主菜单除右侧面板外也在右上角加一个常驻房间号芯片，
+  // 让「当前房间」在菜单页右上角也始终可见（与子页面一致）。联机大厅本身居中大号显示，不重复。
+  if (state.lobby.code && state.mode !== 'multi') {
     drawRoomBadge(ctx, state.lobby.code);
   }
 }

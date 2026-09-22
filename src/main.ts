@@ -31,6 +31,7 @@ import {
   type SaveSlotInfo,
 } from './ui/screens';
 import { UI_COLORS, hitTest, type UiButton } from './ui/widgets';
+import { clearRoomStore, persistRoom, restoreRoom } from './net/roomStore';
 
 type Scene = 'menu' | 'game';
 
@@ -87,6 +88,10 @@ class App implements GameHost {
 
     // 菜单初始按钮
     this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
+
+    // 刷新/重开页面后，从本地存储恢复「当前房间」显示（连接已断会提示重连）
+    const restored = restoreRoom(this.playerName);
+    if (restored) this.menuState.lobby = restored;
 
     // 玩家在浏览器里经常先点一下才能出声：任何输入都尝试初始化音频上下文
     window.addEventListener('pointerdown', () => this.audio.init(), { once: false });
@@ -573,6 +578,7 @@ class App implements GameHost {
     this.lobbyNet?.close();
     this.lobbyNet = null;
     this.netRoomCode = '';
+    clearRoomStore();
     this.menuState.lobby = createLobbyInfo();
   }
 
@@ -733,6 +739,7 @@ class App implements GameHost {
       lb.mode = m.mode;
       lb.status = '房间已创建，等待队友加入';
       lb.members = [{ name: this.playerName, color: PLAYER_COLORS[0]!, isHost: true, charId: this.myCharacterId() }];
+      persistRoom(lb);
     });
 
     net.on('joined', (m) => {
@@ -747,6 +754,7 @@ class App implements GameHost {
       lb.joining = false;
       lb.status = '已加入房间，等待房主开始';
       lb.members = m.peers.map((p) => ({ name: p.name, color: p.color, isHost: p.isHost, charId: p.characterId }));
+      persistRoom(lb);
     });
 
     net.on('peerJoined', (m) => {
@@ -756,6 +764,7 @@ class App implements GameHost {
         lb.members = [...lb.members, { name: m.peer.name, color: m.peer.color, isHost: m.peer.isHost, charId: m.peer.characterId }];
       }
       lb.status = `${m.peer.name} 加入了房间`;
+      persistRoom(lb);
     });
 
     net.on('peerLeft', (m) => {
@@ -779,6 +788,7 @@ class App implements GameHost {
       this.menuState.lobby.status = '连接已断开';
       this.menuState.lobby.phase = 'idle';
       this.menuState.lobby.joining = false;
+      clearRoomStore();
     });
   }
 

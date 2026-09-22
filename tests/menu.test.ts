@@ -149,9 +149,11 @@ function toRoom(state: MenuState, mode: 'coop' | 'pk' = 'coop'): void {
 /** 半高卡片：原 572 高整栏被否掉，两种状态共用同一尺寸（见 screens.ts 的 ROOM_PANEL）。 */
 const PANEL = { x: 640, y: 108, w: 560, h: 286 };
 
-/** 面板内绘制的文字必须落在这个纵向区间里。 */
+/** 面板内绘制的文字必须落在这个矩形区间里（排除右上角房间号芯片）。 */
 function panelTexts(texts: DrawnText[]): DrawnText[] {
-  return texts.filter((t) => t.x >= PANEL.x - 40);
+  return texts.filter(
+    (t) => t.x >= PANEL.x - 40 && t.y >= PANEL.y && t.y < PANEL.y + PANEL.h,
+  );
 }
 
 // ------------------------------------------------------------------ 用例
@@ -252,18 +254,22 @@ describe('主菜单右侧面板', () => {
     expect(idle.find((b) => b.id === 'multi')?.label).toBe('联机模式');
   });
 
-  test('房间号徽标只在主菜单之外出现（不与右侧面板重复）', () => {
-    const main = createMenuState();
-    toRoom(main);
-    const mainTexts = render(main).map((t) => t.text);
-    // 主菜单用大字逐字画，不存在整串 'AB12'
-    expect(mainTexts).not.toContain('AB12');
+  test('房间号在菜单页右上角与子页面都常驻显示', () => {
+    // 需求：房主建房后，菜单页（主菜单）右上角也要显示「当前房间」房间号，
+    // 与右侧面板形成双重可见，不再只在子页面出现。
+    for (const mode of ['main', 'codex', 'settings', 'saves', 'charselect'] as const) {
+      const st = createMenuState();
+      toRoom(st);
+      st.mode = mode;
+      const texts = render(st).map((t) => t.text);
+      expect(texts).toContain('AB12');
+    }
 
-    const codex = createMenuState();
-    toRoom(codex);
-    codex.mode = 'codex';
-    const codexTexts = render(codex).map((t) => t.text);
-    expect(codexTexts).toContain('AB12');
+    // 联机大厅（multi）本身居中大号显示房间号（非右上角徽标），同样包含房间号
+    const multi = createMenuState();
+    toRoom(multi);
+    multi.mode = 'multi';
+    expect(render(multi).map((t) => t.text)).toContain('AB12');
   });
 });
 
