@@ -581,6 +581,26 @@ class App implements GameHost {
     this.menuState.lobby = createLobbyInfo();
   }
 
+  /**
+   * 联机**一局打完**（需求 26）：自动解散并清空房间，但把玩家留在结算界面。
+   *
+   * 和 `leaveNet` 的差别是全部意义所在 —— 后者立刻回大厅，玩家就看不到战报了。
+   * 先把 `lobbyNet` 置空再 close，这样 `wireLobbyNet` 里 `closed` 回调会因
+   * `this.lobbyNet !== net` 直接返回，不会重复清理。
+   */
+  dissolveRoom(reason: string): void {
+    const net = this.lobbyNet;
+    this.lobbyNet = null;
+    this.netRoomCode = '';
+    clearRoomStore();
+    this.menuState.lobby = createLobbyInfo();
+    this.menuState.lobby.status = reason;
+    if (net) {
+      net.leave();
+      net.close();
+    }
+  }
+
   private myCharacterId(): string {
     return CHARACTERS[this.menuState.selectedChar]?.id ?? CHARACTERS[0]!.id;
   }

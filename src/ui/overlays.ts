@@ -100,6 +100,11 @@ export interface OverlayContext {
   characterName: string;
   /** 本局是否 PK 自由混战（决定结算界面的抬头文案）。 */
   pk?: boolean;
+  /**
+   * 本局是否是联机局。联机一局打完会**自动解散房间**（需求 26），
+   * 结算面板要如实告诉玩家「房间没了」，否则他会以为是掉线。
+   */
+  net?: boolean;
 }
 
 export function createOverlayState(): OverlayState {
@@ -905,6 +910,17 @@ function drawSummary(
   ctx.font = '800 22px "Segoe UI",monospace';
   ctx.fillText(`${oc.score}`, 720, 474);
   ctx.restore();
+
+  // 联机：一局打完房间已自动解散，得说清楚 —— 房间号消失不是掉线。
+  if (oc.net === true) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(206,198,232,0.6)';
+    ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText('对局已结束，房间已自动解散 —— 再来一局请在大厅重新建房', 640, 622);
+    ctx.restore();
+  }
 
   for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
   void drawKeyHint;

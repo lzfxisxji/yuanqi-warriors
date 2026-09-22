@@ -135,6 +135,18 @@ function recordingCtx(sink: string[]): CanvasRenderingContext2D {
   }) as unknown as CanvasRenderingContext2D;
 }
 
+/**
+ * `makeCtx()` 的 Proxy 会优先读 store，所以预置 `fillText` 就能把整帧文字录下来，
+ * 其余绘图接口（getImageData 等）仍沿用 `makeCtx` 的全量替身 —— 不用再抄一份。
+ */
+function makeRecordingCanvas(sink: string[], width = 1280, height = 720) {
+  const { canvas } = makeCanvas(width, height);
+  const ctx = canvas.getContext() as unknown as Record<string, unknown>;
+  ctx.fillText = (text: unknown) => sink.push(String(text));
+  ctx.strokeText = (text: unknown) => sink.push(String(text));
+  return canvas;
+}
+
 beforeAll(() => {
   const g = globalThis as unknown as Record<string, unknown>;
   g.window = {
@@ -215,9 +227,15 @@ function fakeNet(): FakeNet {
   };
 }
 
-function makeHost(): GameHost {
-  const { canvas } = makeCanvas();
-  return {
+/** 宿主被调用的联机收尾入口记录（需求 26 的断言就靠它）。 */
+interface NetCallLog {
+  dissolved: string[];
+  leftNet: string[];
+}
+
+function makeHost(log?: NetCallLog, sink?: string[]): GameHost {
+  const canvas = sink ? makeRecordingCanvas(sink) : makeCanvas().canvas;
+  const host: GameHost = {
     renderer: new WorldRenderer(canvas as unknown as HTMLCanvasElement),
     input: new Input(canvas as unknown as HTMLCanvasElement),
     audio: new AudioSystem(),
@@ -226,6 +244,15 @@ function makeHost(): GameHost {
     endRun: () => undefined,
     abandonRun: () => undefined,
   };
+  if (log) {
+    host.dissolveRoom = (reason: string) => {
+      log.dissolved.push(reason);
+    };
+    host.leaveNet = (reason: string) => {
+      log.leftNet.push(reason);
+    };
+  }
+  return host;
 }
 
 function runFrames(scene: GameplayScene, frames: number): void {
@@ -241,8 +268,10 @@ function makeNetScene(
   localPeerId: string,
   net: FakeNet,
   seed = 424242,
+  log?: NetCallLog,
+  sink?: string[],
 ) {
-  const host = makeHost();
+  const host = makeHost(log, sink);
   const scene = new GameplayScene(host, role === 'host' ? 'lulu' : 'milkdragon', seed, {
     client: net.client,
     role,
@@ -420,6 +449,70 @@ describe('联机 PK：房主侧的判定与广播内容', () => {
 
     hostSide.scene.dispose();
     guestSide.scene.dispose();
+  });
+});
+
+describe('联机：一局打完自动解散并清空房间（需求 26）', () => {
+  test('房主侧：PK 分出胜负 → 房间立刻解散，房间号与记分板从画面消失', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [] };
+    const sink: string[] = [];
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, sink);
+
+    runFrames(scene, 2);
+    // 对局中：房间号 + 记分板的「自由混战」抬头都在
+    expect(sink.join('|')).toContain('房间 PK01');
+    expect(sink.join('|')).toContain('自由混战');
+    expect(log.dissolved).toEqual([]);
+    sink.length = 0;
+
+    slay(scene.state.player);
+    runFrames(scene, 3);
+    expect(scene.overlayMode).toBe('dead');
+
+    // 房间被真正解散（只发生一次），且**没有**把人拽回大厅
+    expect(log.dissolved.length).toBe(1);
+    expect(log.leftNet).toEqual([]);
+
+    // 画面上不再有任何房间残留
+    const after = sink.join('|');
+    expect(after).not.toContain('房间 PK01');
+    expect(after).not.toContain('自由混战');
+    // 但要说清楚「房间没了不是掉线」
+    expect(after).toContain('房间已自动解散');
+
+    scene.dispose();
+  });
+
+  test('客户端侧：房主解散房间后仍留在结算界面，不会被踢回大厅', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [] };
+    const { scene } = makeNetScene('pk', 'client', 'p-guest', net, 424242, log);
+
+    net.emit({ t: 'gameover', won: false, winnerId: 'p-guest', reason: 'pk' });
+    expect(scene.overlayMode).toBe('victory');
+
+    // 房主离房 → 中继给成员发的就是这条
+    net.emit({ t: 'closed' });
+
+    expect(log.leftNet).toEqual([]); // 关键：不能因关房把结算界面顶掉
+    expect(log.dissolved).toEqual([]); // 解散由房主负责，客户端不重复发起
+    expect(scene.overlayMode).toBe('victory');
+    expect((scene as unknown as { roomCode: string }).roomCode).toBe('');
+    scene.dispose();
+  });
+
+  test('回归：对局中掉线仍然照旧回大厅（本次改动不能把这条也吃掉）', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [] };
+    const { scene } = makeNetScene('coop', 'client', 'p-guest', net, 424242, log);
+    runFrames(scene, 2);
+    expect(scene.overlayMode).toBe('none');
+
+    net.emit({ t: 'closed' });
+
+    expect(log.leftNet.length).toBe(1);
+    scene.dispose();
   });
 });
 

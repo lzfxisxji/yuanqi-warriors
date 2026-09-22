@@ -92,6 +92,14 @@ export interface GameHost {
   exitToLobby?(): void;
   /** 联机对局结束/掉线后，由场景回调让宿主收尾（关闭连接、回大厅）。 */
   leaveNet?(reason: string): void;
+  /**
+   * 联机**一局打完**（需求 26）：自动解散并清空房间，但把玩家留在结算界面。
+   *
+   * 和 `leaveNet` 的区别是全部意义所在 —— 后者会立刻把人拽回大厅，
+   * 这里只清房间，结算数据还得让玩家看完。
+   * 可选：无头测试用的宿主可以不实现。
+   */
+  dissolveRoom?(reason: string): void;
 }
 
 /** 联机开局参数：由大厅在收到 start 消息后传入。 */
@@ -191,6 +199,8 @@ export class GameplayScene {
   private localPeerId = '';
   private peers: PeerInfo[] = [];
   private roomCode = '';
+  /** 一局结束后房间是否已经解散过（防止 finishRun 被重复触发时重复解散）。 */
+  private netRoomDissolved = false;
   /** 本地玩家恒为 allPlayers[0]（即 run.player），其余为远端玩家。该数组引用保持稳定。 */
   private readonly allPlayers: Player[] = [];
   private readonly playerByPeer = new Map<string, Player>();
@@ -1281,6 +1291,23 @@ export class GameplayScene {
       this.netOverSent = true;
       this.net?.send({ t: 'gameover', won, winnerId: this.winnerId, reason: this.netMode });
     }
+    // 联机：一局打完 —— **立刻解散并清空房间**（需求 26）。
+    // 必须放在 gameover 广播之后，否则客户端收不到结算结果。
+    if (this.isMultiplayer()) this.endNetRoom();
+  }
+
+  /**
+   * 一局结束时的房间收尾（需求 26）：联机「自由混战 / 合作」打完一局后，
+   * 房间不再属于任何人 —— 房间号与记分板立刻从画面消失，房主负责真正解散房间。
+   *
+   * 玩家仍停留在结算界面（想再看一眼战绩），返回大厅后要重新建房。
+   */
+  private endNetRoom(): void {
+    this.roomCode = '';
+    if (this.netRoomDissolved) return;
+    this.netRoomDissolved = true;
+    // 只有房主能解散房间；客户端等房主广播的 `closed`，那时同样只是清掉房间显示。
+    if (this.netRole === 'host') this.host.dissolveRoom?.('对局已结束，房间已解散');
   }
 
   // ------------------------------------------------------------- 房间状态
@@ -1585,6 +1612,7 @@ export class GameplayScene {
       settings: this.host.save.data.settings,
       characterName: this.run.character.name,
       pk: this.netMode === 'pk',
+      net: this.isMultiplayer(),
     };
   }
 
@@ -2108,8 +2136,9 @@ export class GameplayScene {
     }
   }
 
-  /** 联机 HUD：房间号 + 记分板 + 房间/成员提示。 */
+  /** 联机 HUD：房间号 + 记分板 + 房间/成员提示。一局打完后房间已解散，整块不再绘制。 */
   private drawNetHud(ctx: CanvasRenderingContext2D, time: number): void {
+    if (this.ended) return;
     const rows = this.allPlayers;
     const w = 220;
     const rowH = 32;
@@ -2316,7 +2345,15 @@ export class GameplayScene {
         if (m.t === 'gameover') this.onNetGameover(m.won, m.winnerId);
       });
     }
-    this.net.on('closed', () => this.host.leaveNet?.('与服务器的连接已断开'));
+    this.net.on('closed', () => {
+      // 一局已经打完（房主解散了房间）：只把房间从画面上清掉，
+      // **不能**再走 leaveNet —— 那会把人从结算界面直接拽回大厅，战绩都看不完。
+      if (this.ended) {
+        this.endNetRoom();
+        return;
+      }
+      this.host.leaveNet?.('与服务器的连接已断开');
+    });
   }
 
   private addRemotePlayer(peer: PeerInfo): Player {
