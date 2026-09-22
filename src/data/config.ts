@@ -162,6 +162,18 @@ export const DEFAULT_NET_URL =
 export const NET_SNAPSHOT_HZ = 20;
 /** 客户端上报输入的频率（Hz）。 */
 export const NET_INPUT_HZ = 30;
+
+// ------------------------------------------------------- 自由混战比赛规则
+/**
+ * 自由混战一局的时长（秒）。
+ *
+ * 自由混战不是"一趟远征"，而是**一场定胜负的比赛**：3 分钟到点就按人头数排名，
+ * 谁杀得多谁赢。以前 PK 只有"活到最后"一个结束条件，两个人都躲着不打就永远不结束。
+ */
+export const PK_MATCH_SECONDS = 180;
+
+/** 自由混战：击杀这么多人头即可**提前结束比赛**直接胜出。 */
+export const PK_KILL_TARGET = 10;
 /** 联机玩家配色（按加入顺序分配，索引 0 固定为本地房主色）。 */
 export const PLAYER_COLORS = [
   '#5cc8ff',

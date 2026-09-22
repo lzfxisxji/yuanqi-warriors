@@ -724,7 +724,7 @@ function drawRoomPanel(ctx: CanvasRenderingContext2D, state: MenuState, time: nu
   ctx.textAlign = 'left';
   ctx.fillStyle = lb.mode === 'coop' ? UI_COLORS.mint : UI_COLORS.danger;
   ctx.font = '700 14px "PingFang SC","Segoe UI",sans-serif';
-  ctx.fillText(lb.mode === 'coop' ? '合作闯关 · 友伤关闭' : '自由混战 · 最后存活者胜', left, 258);
+  ctx.fillText(lb.mode === 'coop' ? '合作闯关 · 友伤关闭' : '自由混战 · 3 分钟 · 10 杀', left, 258);
   ctx.textAlign = 'right';
   ctx.fillStyle = UI_COLORS.text;
   ctx.font = '700 14px "Segoe UI",monospace';
@@ -796,7 +796,7 @@ function drawLobby(
   drawHeading(ctx, '联机模式', 640, 56, 34);
   drawHeading(
     ctx,
-    lb.mode === 'coop' ? '合作闯关 · 共享地牢，一起清理深渊' : '自由混战 · 各自为战，最后存活者胜',
+    lb.mode === 'coop' ? '合作闯关 · 共享地牢，一起清理深渊' : '自由混战 · 3 分钟一把，先击杀 10 人者胜',
     640,
     90,
     14,
@@ -823,7 +823,10 @@ function drawLobby(
     ctx.fillText(b.label, b.x + b.w / 2, b.y + 50);
     ctx.fillStyle = UI_COLORS.textDim;
     ctx.font = '500 13px "PingFang SC","Segoe UI",sans-serif';
-    const desc = b.id === 'mm-mode-coop' ? '共享同一份地牢，敌人一起打，无友伤' : '互相可伤害，最后存活者胜，阵亡后可观战';
+    const desc =
+      b.id === 'mm-mode-coop'
+        ? '共享同一份地牢，敌人一起打，无友伤'
+        : '3 分钟一把，先击杀 10 人者胜；互相可伤害，阵亡后可观战';
     // 注意：这里的 textAlign 是 'center'（跟着标题设的），wrapText 内部就是直接 fillText，
     // 所以 x 必须传**卡片水平中心**。传卡片左内边距的话，整行会以那个点为居中向两侧溢出卡片外。
     wrapText(ctx, desc, b.x + b.w / 2, b.y + 82, b.w - 60, 18);

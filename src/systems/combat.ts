@@ -26,6 +26,15 @@ export interface HitOptions {
   knockback: number;
   /** 命中粒子颜色 */
   color?: string;
+  /**
+   * 施加者的阵营（= 归属玩家）。
+   *
+   * 自由混战（PK）里每个玩家的 `team` 就是自己的 peerId，所以这一个字段就足以
+   * 把「这一下是谁打的」记在敌人身上（`Enemy.killedByTeam`），
+   * 结算时按人头判定胜负才公平 —— 否则所有击杀都会被记到房主头上。
+   * 单机 / 合作模式不需要，可以不传。
+   */
+  ownerTeam?: Team;
 }
 
 export interface HitEntity {

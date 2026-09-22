@@ -12,12 +12,15 @@
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EventBus } from '../src/core/eventbus';
 import { Input } from '../src/core/input';
-import { ROOM_H, ROOM_W } from '../src/data/config';
+import { PK_KILL_TARGET, PK_MATCH_SECONDS, ROOM_H, ROOM_W } from '../src/data/config';
+import { getEnemyDef } from '../src/data/enemies';
+import { Enemy } from '../src/entities/enemy';
 import type { Player } from '../src/entities/player';
 import { WorldRenderer } from '../src/render/renderer';
 import { GameplayScene, type GameHost } from '../src/scenes/gameplay';
 import { AudioSystem } from '../src/systems/audio';
 import { SaveManager, createMemoryStorage, defaultSettings } from '../src/systems/save';
+import type { RunResult } from '../src/systems/run';
 import type { ClientMsg, NetMode, PeerInfo, ServerMsg, Snapshot } from '../src/net/protocol';
 import type { NetClient } from '../src/net/NetClient';
 import {
@@ -227,10 +230,11 @@ function fakeNet(): FakeNet {
   };
 }
 
-/** 宿主被调用的联机收尾入口记录（需求 26 的断言就靠它）。 */
+/** 宿主被调用的联机收尾入口记录（需求 26/27 的断言就靠它）。 */
 interface NetCallLog {
   dissolved: string[];
   leftNet: string[];
+  ended: RunResult[];
 }
 
 function makeHost(log?: NetCallLog, sink?: string[]): GameHost {
@@ -245,6 +249,9 @@ function makeHost(log?: NetCallLog, sink?: string[]): GameHost {
     abandonRun: () => undefined,
   };
   if (log) {
+    host.endRun = (result: RunResult) => {
+      log.ended.push(result);
+    };
     host.dissolveRoom = (reason: string) => {
       log.dissolved.push(reason);
     };
@@ -310,7 +317,7 @@ function summary(cause: string, won: boolean): DeathSummary {
   };
 }
 
-function summaryOverlayCtx(pk: boolean): OverlayContext {
+function summaryOverlayCtx(pk: boolean, net = false): OverlayContext {
   return {
     gold: 233,
     hp: 80,
@@ -324,7 +331,22 @@ function summaryOverlayCtx(pk: boolean): OverlayContext {
     settings: defaultSettings(),
     characterName: '奶龙',
     pk,
+    net,
   };
+}
+
+/** 结算面板两个出口的屏幕坐标（见 overlays.ts 的 dead/victory 布局）。 */
+const RETRY_BTN: [number, number] = [640, 523];
+const ROOM_EXIT_BTN: [number, number] = [640, 585];
+
+function clickAt(host: GameHost, scene: GameplayScene, x: number, y: number): void {
+  const pointer = host.input.pointer;
+  pointer.down = false;
+  pointer.sx = x;
+  pointer.sy = y;
+  pointer.justDown = true;
+  scene.update(1 / 60);
+  pointer.justDown = false;
 }
 
 // ------------------------------------------------------------------ 测试
@@ -452,32 +474,32 @@ describe('联机 PK：房主侧的判定与广播内容', () => {
   });
 });
 
-describe('联机：一局打完自动解散并清空房间（需求 26）', () => {
-  test('房主侧：PK 分出胜负 → 房间立刻解散，房间号与记分板从画面消失', () => {
+describe('联机房间生命周期：合作一局打完自动收房（需求 26）', () => {
+  test('合作模式：全队阵亡 → 房间立刻解散，房间号与记分板从画面消失', () => {
     const net = fakeNet();
-    const log: NetCallLog = { dissolved: [], leftNet: [] };
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
     const sink: string[] = [];
-    const { scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, sink);
+    const { scene } = makeNetScene('coop', 'host', 'p-host', net, 424242, log, sink);
 
     runFrames(scene, 2);
-    // 对局中：房间号 + 记分板的「自由混战」抬头都在
+    // 对局中：房间号 + 记分板的「合作闯关」抬头都在
     expect(sink.join('|')).toContain('房间 PK01');
-    expect(sink.join('|')).toContain('自由混战');
+    expect(sink.join('|')).toContain('合作闯关');
     expect(log.dissolved).toEqual([]);
     sink.length = 0;
 
-    slay(scene.state.player);
-    runFrames(scene, 3);
+    // 合作模式要全员倒下才算结束（单人阵亡不结束整局）
+    const players = (scene as unknown as { allPlayers: Player[] }).allPlayers;
+    for (const p of players) slay(p);
+    runFrames(scene, 4);
     expect(scene.overlayMode).toBe('dead');
 
-    // 房间被真正解散（只发生一次），且**没有**把人拽回大厅
     expect(log.dissolved.length).toBe(1);
     expect(log.leftNet).toEqual([]);
 
-    // 画面上不再有任何房间残留
     const after = sink.join('|');
     expect(after).not.toContain('房间 PK01');
-    expect(after).not.toContain('自由混战');
+    expect(after).not.toContain('合作闯关');
     // 但要说清楚「房间没了不是掉线」
     expect(after).toContain('房间已自动解散');
 
@@ -486,7 +508,7 @@ describe('联机：一局打完自动解散并清空房间（需求 26）', () =
 
   test('客户端侧：房主解散房间后仍留在结算界面，不会被踢回大厅', () => {
     const net = fakeNet();
-    const log: NetCallLog = { dissolved: [], leftNet: [] };
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
     const { scene } = makeNetScene('pk', 'client', 'p-guest', net, 424242, log);
 
     net.emit({ t: 'gameover', won: false, winnerId: 'p-guest', reason: 'pk' });
@@ -504,7 +526,7 @@ describe('联机：一局打完自动解散并清空房间（需求 26）', () =
 
   test('回归：对局中掉线仍然照旧回大厅（本次改动不能把这条也吃掉）', () => {
     const net = fakeNet();
-    const log: NetCallLog = { dissolved: [], leftNet: [] };
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
     const { scene } = makeNetScene('coop', 'client', 'p-guest', net, 424242, log);
     runFrames(scene, 2);
     expect(scene.overlayMode).toBe('none');
@@ -512,6 +534,221 @@ describe('联机：一局打完自动解散并清空房间（需求 26）', () =
     net.emit({ t: 'closed' });
 
     expect(log.leftNet.length).toBe(1);
+    scene.dispose();
+  });
+});
+
+describe('自由混战：比赛时长与人头目标（需求 27）', () => {
+  test('先到 10 人头即提前结束，且胜者是人头达标的那一位', () => {
+    const net = fakeNet();
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net);
+    runFrames(scene, 2);
+
+    scene.state.player.kills = PK_KILL_TARGET;
+    runFrames(scene, 3);
+
+    expect(scene.overlayMode).toBe('victory');
+    const over = net.sent.filter((m) => m.t === 'gameover');
+    expect(over.length).toBe(1);
+    expect(over[0]).toMatchObject({ t: 'gameover', won: true, winnerId: 'p-host' });
+    const overlay = (scene as unknown as { overlay: OverlayState }).overlay;
+    expect(overlay.death?.cause).toContain(`率先击杀 ${PK_KILL_TARGET} 人`);
+    scene.dispose();
+  });
+
+  test('差一个人头不算提前结束 —— 门槛是「达到」而不是「接近」', () => {
+    const net = fakeNet();
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net);
+    runFrames(scene, 2);
+
+    scene.state.player.kills = PK_KILL_TARGET - 1;
+    runFrames(scene, 3);
+
+    expect(scene.overlayMode).toBe('none');
+    scene.dispose();
+  });
+
+  test('倒计时归零 → 按人头数排名判定胜负（不再只看"活到最后"）', () => {
+    const net = fakeNet();
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net);
+    runFrames(scene, 2);
+
+    scene.state.player.kills = 4; // 房主 4 杀，对手 0 杀
+    (scene as unknown as { pkTimeLeft: number }).pkTimeLeft = 0.01;
+    runFrames(scene, 3);
+
+    expect(scene.overlayMode).toBe('victory');
+    const over = net.sent.filter((m) => m.t === 'gameover');
+    expect(over[0]).toMatchObject({ t: 'gameover', won: true, winnerId: 'p-host' });
+    scene.dispose();
+  });
+
+  test('倒计时一路递减，并随快照下发给客户端（两边时钟不各算各的）', () => {
+    const hostNet = fakeNet();
+    const hostSide = makeNetScene('pk', 'host', 'p-host', hostNet);
+    runFrames(hostSide.scene, 40); // 约 0.67s
+
+    const snaps = hostNet.sent.filter((m) => m.t === 'snapshot');
+    expect(snaps.length).toBeGreaterThan(0);
+    const last = snaps[snaps.length - 1]!;
+    if (last.t !== 'snapshot') throw new Error('unreachable');
+    expect(last.s.killTarget).toBe(PK_KILL_TARGET);
+    expect(last.s.matchTimeLeft).toBeLessThan(PK_MATCH_SECONDS);
+    expect(last.s.matchTimeLeft).toBeGreaterThan(PK_MATCH_SECONDS - 5);
+
+    // 客户端：照快照画倒计时 + 目标
+    const sink: string[] = [];
+    const guestNet = fakeNet();
+    const guestSide = makeNetScene('pk', 'client', 'p-guest', guestNet, 424242, undefined, sink);
+    guestNet.emit({ t: 'snapshot', s: { ...last.s, matchTimeLeft: 42 } });
+    runFrames(guestSide.scene, 2);
+    expect(sink.join('|')).toContain('0:42');
+    expect(sink.join('|')).toContain(`击杀 ${PK_KILL_TARGET} 人提前结束`);
+
+    hostSide.scene.dispose();
+    guestSide.scene.dispose();
+  });
+
+  test('时间到人头打平 → 判平局，且原因随 gameover 一起下发给客户端', () => {
+    const net = fakeNet();
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net);
+    runFrames(scene, 2);
+
+    (scene as unknown as { pkTimeLeft: number }).pkTimeLeft = 0.01;
+    runFrames(scene, 3);
+
+    expect(scene.overlayMode).toBe('dead');
+    const over = net.sent.filter((m) => m.t === 'gameover');
+    expect(over.length).toBe(1);
+    if (over[0]?.t !== 'gameover') throw new Error('unreachable');
+    expect(over[0].winnerId).toBe(null);
+    expect(over[0].cause).toContain('平局');
+
+    // 客户端照房主给的原因显示，而不是自己猜成"全员阵亡"
+    const sink: string[] = [];
+    const guestNet = fakeNet();
+    const guestSide = makeNetScene('pk', 'client', 'p-guest', guestNet, 424242, undefined, sink);
+    guestNet.emit({ t: 'gameover', won: false, winnerId: null, reason: 'pk', cause: over[0].cause });
+    runFrames(guestSide.scene, 2);
+
+    expect(sink.join('|')).toContain('PK 平局');
+    expect(sink.join('|')).not.toContain('全员阵亡');
+
+    scene.dispose();
+    guestSide.scene.dispose();
+  });
+
+  test('人头归属：最后一下是谁打的就算谁的（否则 2 人局全记在房主头上）', () => {
+    const net = fakeNet();
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net);
+    runFrames(scene, 2);
+
+    const sc = scene as unknown as {
+      enemies: Enemy[];
+      onEnemyDeath(e: Enemy): void;
+      playerByTeam(team: string): Player | null;
+    };
+    const enemy = new Enemy(getEnemyDef('grub'), ROOM_W / 2, ROOM_H / 2, 1);
+    // 模拟"挑战者打出的最后一击"（弹丸/光束/近战都会带上 ownerTeam）
+    enemy.killedByTeam = 'p-guest';
+    enemy.dead = true;
+    sc.onEnemyDeath(enemy);
+
+    expect(sc.playerByTeam('p-guest')!.kills).toBe(1);
+    expect(scene.state.player.kills).toBe(0);
+
+    // 没人标记归属时（单机 / 合作）照旧记在本地玩家头上
+    const plain = new Enemy(getEnemyDef('grub'), ROOM_W / 2, ROOM_H / 2, 1);
+    plain.dead = true;
+    sc.onEnemyDeath(plain);
+    expect(scene.state.player.kills).toBe(1);
+    scene.dispose();
+  });
+});
+
+describe('自由混战：房间留到玩家主动关闭，「再来一次」重开一局（需求 27）', () => {
+  test('一局打完房间**不**自动解散 —— 否则「再来一次」就无从谈起', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const sink: string[] = [];
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, sink);
+
+    runFrames(scene, 2);
+    slay(scene.state.player);
+    runFrames(scene, 3);
+    expect(scene.overlayMode).toBe('dead');
+
+    expect(log.dissolved).toEqual([]);
+    expect(log.leftNet).toEqual([]);
+    expect((scene as unknown as { roomCode: string }).roomCode).toBe('PK01');
+
+    // 两个出口都要如实说明：房间还在，可以再来一次
+    const after = sink.join('|');
+    expect(after).toContain('关闭房间');
+    expect(after).toContain('在同一房间直接开下一局');
+    scene.dispose();
+  });
+
+  test('房主点「再来一次」→ 发 rematch（新 start 会让所有人重建场景）', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const { host, scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, []);
+    runFrames(scene, 2);
+    slay(scene.state.player);
+    runFrames(scene, 3);
+
+    clickAt(host, scene, RETRY_BTN[0], RETRY_BTN[1]);
+
+    expect(net.sent.filter((m) => m.t === 'rematch').length).toBe(1);
+    expect(net.sent.filter((m) => m.t === 'rematchRequest').length).toBe(0);
+    expect(log.dissolved).toEqual([]); // 重开一局 ≠ 解散房间
+    scene.dispose();
+  });
+
+  test('客户端点「再来一次」→ 只发 rematchRequest（房主权威，不能自己开局）', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const { host, scene } = makeNetScene('pk', 'client', 'p-guest', net, 424242, log, []);
+    net.emit({ t: 'gameover', won: false, winnerId: 'p-host', reason: 'pk' });
+
+    clickAt(host, scene, RETRY_BTN[0], RETRY_BTN[1]);
+
+    expect(net.sent.filter((m) => m.t === 'rematchRequest').length).toBe(1);
+    expect(net.sent.filter((m) => m.t === 'rematch').length).toBe(0);
+    scene.dispose();
+  });
+
+  test('房主收到 rematchRequest → 代客户端开下一局（对局中一律忽略）', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const { scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log);
+
+    // 对局中：不接受重开请求，免得有人在中途把局强行重置
+    runFrames(scene, 2);
+    net.emit({ t: 'rematchRequest', from: 'p-guest' });
+    runFrames(scene, 1);
+    expect(net.sent.filter((m) => m.t === 'rematch').length).toBe(0);
+
+    // 本局结束后：受理
+    slay(scene.state.player);
+    runFrames(scene, 3);
+    net.emit({ t: 'rematchRequest', from: 'p-guest' });
+    expect(net.sent.filter((m) => m.t === 'rematch').length).toBe(1);
+    scene.dispose();
+  });
+
+  test('「关闭房间」才真的解散房间并把玩家送走', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const { host, scene } = makeNetScene('pk', 'host', 'p-host', net, 424242, log, []);
+    runFrames(scene, 2);
+    slay(scene.state.player);
+    runFrames(scene, 3);
+
+    clickAt(host, scene, ROOM_EXIT_BTN[0], ROOM_EXIT_BTN[1]);
+
+    expect(log.dissolved.length).toBe(1);
+    expect(log.ended.length).toBe(1);
     scene.dispose();
   });
 });
@@ -567,5 +804,56 @@ describe('联机 PK：结算界面文案', () => {
     );
     expect(text).toContain('通关成功');
     expect(text.join('|')).toContain('深渊之心');
+  });
+
+  test('联机结算的出口叫「关闭房间」，单机仍是「返回大厅」', () => {
+    const netGame = createOverlayState();
+    netGame.mode = 'victory';
+    netGame.death = summary('你成为了最后的幸存者', true);
+    const netButtons = buildOverlayButtons(netGame, summaryOverlayCtx(true, true));
+    expect(netButtons.find((b) => b.id === 'abandon')?.label).toBe('关闭房间');
+
+    const solo = createOverlayState();
+    solo.mode = 'dead';
+    solo.death = summary('被深渊吞噬', false);
+    expect(buildOverlayButtons(solo, summaryOverlayCtx(false)).find((b) => b.id === 'abandon')?.label).toBe(
+      '返回大厅',
+    );
+
+    // 两个出口各干什么，面板底部得写清楚
+    const text: string[] = [];
+    drawOverlay(recordingCtx(text), netGame, netButtons, null, 1, summaryOverlayCtx(true, true));
+    expect(text.join('|')).toContain('在同一房间直接开下一局');
+  });
+
+  test('等房主开下一局时「再来一次」置灰换文案 —— 点了不像没反应', () => {
+    const st = createOverlayState();
+    st.mode = 'victory';
+    st.death = summary('你成为了最后的幸存者', true);
+    st.resultNotice = '正在开始下一局…';
+    const btns = buildOverlayButtons(st, summaryOverlayCtx(true, true));
+    const retry = btns.find((b) => b.id === 'retry')!;
+    expect(retry.enabled).toBe(false);
+    expect(retry.label).toBe('正在开始下一局…');
+
+    const text: string[] = [];
+    drawOverlay(recordingCtx(text), st, btns, null, 1, summaryOverlayCtx(true, true));
+    expect(text.join('|')).toContain('正在开始下一局…');
+  });
+
+  test('房主关掉房间后，客户端的结算页要说清"房主已关闭房间"', () => {
+    const net = fakeNet();
+    const log: NetCallLog = { dissolved: [], leftNet: [], ended: [] };
+    const sink: string[] = [];
+    const { scene } = makeNetScene('pk', 'client', 'p-guest', net, 424242, log, sink);
+    net.emit({ t: 'gameover', won: true, winnerId: 'p-guest', reason: 'pk' });
+    sink.length = 0;
+
+    net.emit({ t: 'closed' });
+    runFrames(scene, 1);
+
+    expect(sink.join('|')).toContain('房主已关闭房间');
+    expect(scene.overlayMode).toBe('victory'); // 仍然留在结算界面
+    scene.dispose();
   });
 });

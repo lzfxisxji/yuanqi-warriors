@@ -142,6 +142,10 @@ export interface Snapshot {
    * 才能在 gameover 消息丢失时也判对自己的胜负（见 onNetGameover）。
    */
   winnerId?: string | null;
+  /** 自由混战：本局剩余秒数（客户端照它画倒计时，只由房主推进）。 */
+  matchTimeLeft?: number;
+  /** 自由混战：提前结束比赛需要的人头数。 */
+  killTarget?: number;
 }
 
 // ---------------------------------------------------------------- 消息
@@ -157,7 +161,17 @@ export type ClientMsg =
   /** 房主 → 服务器：把一次强化选择推送给指定玩家。 */
   | { t: 'upgradeChoice'; to: string; options: string[] }
   /** 房主 → 服务器：对局结束（胜利 / 失败 / PK 胜者）。 */
-  | { t: 'gameover'; won: boolean; winnerId: string | null; reason: string }
+  | { t: 'gameover'; won: boolean; winnerId: string | null; reason: string; cause?: string }
+  /**
+   * 房主 → 服务器：**再开一局**（自由混战结算页的「再来一次」）。
+   *
+   * 不能复用 `start`：中继里 `start` 有 `room.started` 门闩，只会生效一次。
+   * `rematch` 会让房间所有人收到一条新的 `start`（新种子），
+   * 于是每个人都会**重建一个全新的 GameplayScene** —— 场景、人头、计时全部归零。
+   */
+  | { t: 'rematch' }
+  /** 客户端 → 服务器：请求房主再开一局（房主权威，客户端不能自己开）。 */
+  | { t: 'rematchRequest' }
   | { t: 'snapshot'; s: Snapshot };
 
 /** 服务器 → 客户端 */
@@ -173,7 +187,9 @@ export type ServerMsg =
   /** 房主收：某客户端回传的强化选择（带发送者 id）。 */
   | { t: 'upgradePick'; from: string; id: string }
   | { t: 'upgradeChoice'; options: string[] }
-  | { t: 'gameover'; won: boolean; winnerId: string | null; reason: string }
+  | { t: 'gameover'; won: boolean; winnerId: string | null; reason: string; cause?: string }
+  /** 房主收：有客户端请求「再来一次」（自由混战）。 */
+  | { t: 'rematchRequest'; from: string }
   | { t: 'error'; message: string }
   | { t: 'closed' };
 

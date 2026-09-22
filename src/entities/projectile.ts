@@ -324,6 +324,8 @@ export class ProjectileSystem {
             dirY: n.y || fallback.y,
             knockback: p.knockback,
             color: p.glow,
+            // 弹丸的 team 就是发射者阵营（自由混战 = 玩家 peerId）→ 人头归属
+            ownerTeam: p.team,
           });
           if (p.burn && !t.dead) world.spawnBurn(t, p.burn.dps, p.burn.duration);
 

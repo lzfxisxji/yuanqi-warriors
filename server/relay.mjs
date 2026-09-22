@@ -207,6 +207,25 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // 自由混战「再来一次」：房间不散，只把所有人重新送进一条新的 start。
+      // 新种子 → 每个客户端重建 GameplayScene → 地图/人头/计时整体重置。
+      // 只能由房主触发（客户端走 rematchRequest 转交给房主）。
+      case 'rematch': {
+        if (!room || room.hostId !== peerId) return;
+        const peers = peerList(room);
+        const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+        broadcast(room, { t: 'start', seed, floor: 1, mode: room.mode, peers });
+        break;
+      }
+
+      // 客户端请求再开一局 → 只告诉房主，由房主决定。
+      case 'rematchRequest': {
+        if (!room) return;
+        const host = room.peers.get(room.hostId);
+        if (host && host.id !== peerId) send(host.ws, { t: 'rematchRequest', from: peerId });
+        break;
+      }
+
       case 'input': {
         if (!room || !msg.i) return;
         const host = room.peers.get(room.hostId);
@@ -245,6 +264,9 @@ wss.on('connection', (ws) => {
           won: !!msg.won,
           winnerId: msg.winnerId ?? null,
           reason: String(msg.reason || ''),
+          // 结算原因（例：`率先击杀 10 人`）：客户端照它显示结算副标题，
+          // 否则只能自己瞎猜（平局 / 时间到 都会被写成"全员阵亡"）。
+          cause: String(msg.cause || ''),
         });
         break;
       }

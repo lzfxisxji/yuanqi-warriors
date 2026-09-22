@@ -18,6 +18,8 @@ import {
   MAX_PLAYERS,
   NET_INPUT_HZ,
   NET_SNAPSHOT_HZ,
+  PK_KILL_TARGET,
+  PK_MATCH_SECONDS,
   PLAYER_COLORS,
   ROOM_CLEAR_REWARD_DELAY,
   ROOM_COLS,
@@ -220,6 +222,17 @@ export class GameplayScene {
   private readonly netPlayersById = new Map<string, Player>();
   private netOverSent = false;
   private winnerId: string | null = null;
+  /**
+   * 自由混战：本局剩余秒数（只由房主推进，客户端从快照读）。
+   *
+   * 以前 PK 只有"活到最后"一个结束条件，两个人都缩着不打就永远不结束；
+   * 现在到点即按人头数排名，比赛一定会收束（需求 27）。
+   */
+  private pkTimeLeft = PK_MATCH_SECONDS;
+  /** 自由混战：本局人头目标（提前结束比赛的门槛）。 */
+  private readonly pkKillTarget = PK_KILL_TARGET;
+  /** 已经有人点过「再来一次」，正在等房主开下一局。 */
+  private rematchWaiting = false;
   private netBanner = '';
   private netBannerTimer = 0;
   /** 客户端：跨帧累积的边沿输入（避免 30Hz 上报丢按键）。 */
@@ -671,6 +684,10 @@ export class GameplayScene {
     if (this.ended) return;
 
     this.run.timeSec += dtRaw;
+    // 自由混战：比赛倒计时（只有房主的时钟算数，客户端照快照显示）
+    if (this.netMode === 'pk' && this.netRole === 'host') {
+      this.pkTimeLeft = Math.max(0, this.pkTimeLeft - dtRaw);
+    }
     const player = this.run.player;
 
     this.updateAim();
@@ -913,7 +930,11 @@ export class GameplayScene {
     this.flash.trigger('255,190,120', e.def.elite ? 0.16 : 0.06, 4);
 
     this.run.stats.kills += 1;
-    this.run.player.kills += 1;
+    // 人头归属（需求 27）：自由混战里每个玩家的 team 就是自己的 peerId，
+    // 谁打的最后一下就算谁的击杀 —— 否则在 2 人局里全都会记到房主头上。
+    const killer = e.killedByTeam ? this.playerByTeam(e.killedByTeam) : null;
+    if (killer) killer.kills += 1;
+    else this.run.player.kills += 1;
     if (this.run.player.mods.lifesteal > 0) {
       this.run.player.heal(this.run.player.mods.lifesteal);
       this.numbers.add(this.run.player.x, this.run.player.y - 30, this.run.player.mods.lifesteal, false, '#7ef2c0');
@@ -1287,20 +1308,30 @@ export class GameplayScene {
     this.host.audio.play(won ? 'win' : 'lose', 1);
     this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
     // 房主：把结算结果广播给所有客户端
-    if (this.netRole === 'host' && !this.netOverSent) {
+    if (this.netRole === 'host' && this.net && !this.netOverSent) {
       this.netOverSent = true;
-      this.net?.send({ t: 'gameover', won, winnerId: this.winnerId, reason: this.netMode });
+      this.net.send({
+        t: 'gameover',
+        won,
+        winnerId: this.winnerId,
+        reason: this.netMode,
+        // 把结算原因一并下发：客户端自己推不出「时间到平局」这类结果
+        cause: this.cause,
+      });
     }
-    // 联机：一局打完 —— **立刻解散并清空房间**（需求 26）。
+    // 联机：一局打完 —— 合作模式立刻解散并清空房间（需求 26）；
+    // **自由混战例外**：PK 是"一把接一把"的比赛，房间必须留着，
+    // 结算页的「再来一次」才能直接开下一局（需求 27）。房间由「关闭房间」主动关。
     // 必须放在 gameover 广播之后，否则客户端收不到结算结果。
-    if (this.isMultiplayer()) this.endNetRoom();
+    if (this.isMultiplayer() && this.netMode !== 'pk') this.endNetRoom();
   }
 
   /**
-   * 一局结束时的房间收尾（需求 26）：联机「自由混战 / 合作」打完一局后，
+   * 一局结束时的房间收尾（需求 26）：联机**合作模式**打完一局后，
    * 房间不再属于任何人 —— 房间号与记分板立刻从画面消失，房主负责真正解散房间。
    *
    * 玩家仍停留在结算界面（想再看一眼战绩），返回大厅后要重新建房。
+   * （自由混战不走这里：比赛结束后房间要留着给「再来一次」复用，见 finishRun。）
    */
   private endNetRoom(): void {
     this.roomCode = '';
@@ -1308,6 +1339,17 @@ export class GameplayScene {
     this.netRoomDissolved = true;
     // 只有房主能解散房间；客户端等房主广播的 `closed`，那时同样只是清掉房间显示。
     if (this.netRole === 'host') this.host.dissolveRoom?.('对局已结束，房间已解散');
+  }
+
+  /**
+   * 「关闭房间」：联机对局彻底收尾（结算页的主出口）。
+   *
+   * 房主会真正解散房间（其他人收到 `closed`），本地玩家回大厅。
+   * 合作模式下房间此前已经自动解散，这里只是把人送走。
+   */
+  private closeRoom(): void {
+    this.endNetRoom();
+    this.host.endRun(this.run.result(this.overlay.mode === 'victory'));
   }
 
   // ------------------------------------------------------------- 房间状态
@@ -1980,7 +2022,15 @@ export class GameplayScene {
         this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
         break;
       case 'abandon':
-        // 不直接删档：先把面板切成「确认放弃 / 取消」，
+        // 结算界面（dead / victory）上的这个按钮是「关闭房间 / 返回大厅」，
+        // **不是**「放弃远征」：这一局已经打完了，没有任何存档需要"放弃"。
+        // （以前它只是把 confirmAbandon 置 true，而结算面板根本不画确认框 →
+        //   点下去毫无反应，玩家就卡死在结算页 —— 真机 bug，需求 27 一并修掉。）
+        if (this.overlay.mode === 'dead' || this.overlay.mode === 'victory') {
+          this.closeRoom();
+          break;
+        }
+        // 暂停面板：不直接删档，先把面板切成「确认放弃 / 取消」，
         // 免得「放弃远征」被当成"退出到大厅"，一点就把几十分钟的进度清掉。
         this.overlay.confirmAbandon = true;
         this.host.audio.play('error', 0.5);
@@ -1995,6 +2045,12 @@ export class GameplayScene {
         this.host.abandonRun();
         break;
       case 'retry':
+        // 自由混战（需求 27）：「再来一次」= 同一个房间直接开下一把。
+        // 新 `start` 会让所有人重建 GameplayScene —— 地图/人头/计时整体重置。
+        if (this.isMultiplayer() && this.netMode === 'pk') {
+          this.requestRematch();
+          break;
+        }
         this.host.endRun(this.run.result(this.overlay.mode === 'victory'));
         break;
       case 'next-floor':
@@ -2163,6 +2219,24 @@ export class GameplayScene {
     ctx.fillStyle = 'rgba(206,198,232,0.72)';
     ctx.font = '600 12px Consolas, monospace';
     ctx.fillText(`${rows.length} 人`, x + w - 14, y + 17);
+
+    // 自由混战：比赛倒计时 + 人头目标（需求 27）。
+    // 没有这行字，玩家根本不知道这把要打多久、打到多少算赢。
+    if (pk) {
+      const left = Math.max(0, Math.ceil(this.pkTimeLeft));
+      const mm = Math.floor(left / 60);
+      const ss = left % 60;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = left <= 30 ? '#ff8a6a' : 'rgba(255,212,121,0.92)';
+      ctx.font = '700 14px Consolas, monospace';
+      ctx.fillText(`剩余 ${mm}:${String(ss).padStart(2, '0')}`, x + w / 2, y + h + 16);
+      ctx.fillStyle = 'rgba(206,198,232,0.68)';
+      ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
+      ctx.fillText(`击杀 ${this.pkKillTarget} 人提前结束`, x + w / 2, y + h + 34);
+      ctx.restore();
+    }
 
     for (let i = 0; i < rows.length; i++) {
       const p = rows[i]!;
@@ -2337,12 +2411,18 @@ export class GameplayScene {
       this.net.on('peerLeft', (m) => {
         if (m.t === 'peerLeft') this.removePeer(m.peerId);
       });
+      // 客户端点了「再来一次」→ 由房主代它开下一局（房主权威）。
+      // 只在本局已经结束时受理：对局中途的请求一律忽略，避免被强行重开。
+      this.net.on('rematchRequest', (m) => {
+        if (m.t !== 'rematchRequest' || !this.ended) return;
+        this.requestRematch();
+      });
     } else {
       this.net.on('snapshot', (m) => {
         if (m.t === 'snapshot') this.lastSnapshot = m.s;
       });
       this.net.on('gameover', (m) => {
-        if (m.t === 'gameover') this.onNetGameover(m.won, m.winnerId);
+        if (m.t === 'gameover') this.onNetGameover(m.won, m.winnerId, m.cause);
       });
     }
     this.net.on('closed', () => {
@@ -2350,6 +2430,8 @@ export class GameplayScene {
       // **不能**再走 leaveNet —— 那会把人从结算界面直接拽回大厅，战绩都看不完。
       if (this.ended) {
         this.endNetRoom();
+        this.overlay.resultNotice = '房主已关闭房间，回大厅去吧';
+        this.overlayButtons = buildOverlayButtons(this.overlay, this.overlayContext());
         return;
       }
       this.host.leaveNet?.('与服务器的连接已断开');
@@ -2540,6 +2622,9 @@ export class GameplayScene {
       gold: this.run.gold,
       phase: this.ended ? (this.overlay.mode === 'victory' ? 'victory' : 'dead') : 'play',
       winnerId: this.winnerId,
+      // 自由混战：比赛倒计时与人头目标由房主推进，客户端只负责显示
+      matchTimeLeft: this.netMode === 'pk' ? this.pkTimeLeft : undefined,
+      killTarget: this.netMode === 'pk' ? this.pkKillTarget : undefined,
     };
   }
 
@@ -2621,6 +2706,8 @@ export class GameplayScene {
       this.clientEnterRoom(s.roomKey);
     }
     this.run.gold = s.gold;
+    // 自由混战：倒计时以房主为准（本地不做任何推算，免得两边时钟漂移）
+    if (typeof s.matchTimeLeft === 'number') this.pkTimeLeft = s.matchTimeLeft;
 
     // 玩家：本地玩家写回 run.player，其余写进缓存的远端 Player
     for (const ps of s.players) {
@@ -2769,7 +2856,7 @@ export class GameplayScene {
     this.host.renderer.snapCamera(this.run.player.x, this.run.player.y);
   }
 
-  private onNetGameover(won: boolean, winnerId: string | null): void {
+  private onNetGameover(won: boolean, winnerId: string | null, cause?: string): void {
     if (this.ended) return;
     this.winnerId = winnerId;
     // PK 是自由混战，「won」只是**房主视角**的结果，客户端绝不能照单全收：
@@ -2780,7 +2867,13 @@ export class GameplayScene {
     if (this.netMode === 'pk') {
       localWon = !!winnerId && winnerId === this.localPeerId;
       if (localWon) {
+        // 胜者永远看到这一句：房主下发的 cause 是**房主视角**的，
+        // 对赢家来说会写成"对手成为了最后的幸存者"，用不得。
         this.cause = '你成为了最后的幸存者';
+      } else if (cause) {
+        // 房主把结算原因一起发下来了（需求 27）：优先照用 ——
+        // 「时间到 · 击杀数最高（平局）」这种结果客户端自己推不出来。
+        this.cause = cause;
       } else if (winnerId) {
         // 昵称优先取快照缓存；还没收到过快照时退回开局就有的 peers 名单，
         // 否则结算界面会显示含糊的"对手"。
@@ -2792,14 +2885,35 @@ export class GameplayScene {
       } else {
         this.cause = '全员阵亡';
       }
+    } else if (cause) {
+      this.cause = cause;
     }
     this.finishRun(localWon);
+  }
+
+  /** 按阵营（= peerId）反查玩家；单机/合作里 team 不是 peerId，一律返回 null。 */
+  private playerByTeam(team: string): Player | null {
+    for (const p of this.allPlayers) {
+      if (p.team === team) return p;
+    }
+    return null;
   }
 
   private checkNetEnd(): void {
     if (this.netRole !== 'host' || this.ended) return;
     const alive = this.allPlayers.filter((p) => !p.dead);
     if (this.netMode === 'pk') {
+      // ------- 比赛规则（需求 27）：3 分钟一把 · 10 人头提前结束 -------
+      // 优先级：先到人头目标者直接胜出 → 时间到按人头排名 → 最后一名幸存者。
+      const leader = this.killLeader();
+      if (leader && leader.kills >= this.pkKillTarget) {
+        this.settlePk(leader, `率先击杀 ${this.pkKillTarget} 人`);
+        return;
+      }
+      if (this.pkTimeLeft <= 0) {
+        this.settlePk(leader, leader ? `时间到 · 击杀数最高` : '时间到 · 无人击杀');
+        return;
+      }
       if (alive.length <= 1) {
         const winner = alive[0] ?? null;
         this.winnerId = winner
@@ -2814,6 +2928,53 @@ export class GameplayScene {
       this.cause = '全队阵亡';
       this.finishRun(false);
     }
+  }
+
+  /** 本局人头最高的玩家（并列 / 全 0 时返回 null，即平局）。 */
+  private killLeader(): Player | null {
+    let best: Player | null = null;
+    let bestKills = 0;
+    let tied = false;
+    for (const p of this.allPlayers) {
+      if (p.kills > bestKills) {
+        bestKills = p.kills;
+        best = p;
+        tied = false;
+      } else if (p.kills === bestKills && bestKills > 0) {
+        tied = true;
+      }
+    }
+    if (!best || bestKills <= 0) return null;
+    return tied ? null : best;
+  }
+
+  /** 自由混战结算：把胜者换算成 peerId 并落定胜负。 */
+  private settlePk(winner: Player | null, reason: string): void {
+    if (winner) {
+      this.winnerId = winner === this.run.player ? this.localPeerId : this.peerByPlayer.get(winner) ?? null;
+      this.cause = `${winner.netName ?? '玩家'} · ${reason}`;
+    } else {
+      this.winnerId = null;
+      this.cause = `${reason}（平局）`;
+    }
+    this.finishRun(winner === this.run.player);
+  }
+
+  /**
+   * 自由混战「再来一次」：**房间不散**，直接请求房主开下一局。
+   *
+   * 房主收到的新 `start` 会让所有人重建 GameplayScene ——
+   * 地图、人头、计时、掉落全部归零，这就是"场景重置"。
+   * 客户端不能自己开，只能请房主代劳（房主权威）。
+   */
+  private requestRematch(): void {
+    if (!this.net) return;
+    this.rematchWaiting = true;
+    this.overlay.resultNotice = '正在开始下一局…';
+    this.netBanner = '正在开始下一局…';
+    this.netBannerTimer = 3;
+    if (this.netRole === 'host') this.net.send({ t: 'rematch' });
+    else this.net.send({ t: 'rematchRequest' });
   }
 
   private autoGrantUpgrade(count: number): void {

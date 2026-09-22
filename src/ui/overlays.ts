@@ -84,6 +84,12 @@ export interface OverlayState {
   saveNotice: string;
   /** 「放弃远征」的二次确认态：true 时暂停面板只剩「确认放弃 / 取消」两个出口。 */
   confirmAbandon: boolean;
+  /**
+   * 结算面板底部的即时状态一行字（例：`正在开始下一局…` / `房主已关闭房间`）。
+   * 点完「再来一次」到新场景真正重建之间有一小段等网络的时间，
+   * 没有这行字玩家会以为按钮没反应。
+   */
+  resultNotice: string;
 }
 
 export interface OverlayContext {
@@ -120,6 +126,7 @@ export function createOverlayState(): OverlayState {
     summary: null,
     saveNotice: '',
     confirmAbandon: false,
+    resultNotice: '',
   };
 }
 
@@ -270,8 +277,29 @@ export function buildOverlayButtons(overlay: OverlayState, ctx: OverlayContext):
     }
     case 'dead':
     case 'victory': {
-      buttons.push({ id: 'retry', label: '再来一次', x: (1280 - 300) / 2, y: 496, w: 300, h: 54, style: 'accent' });
-      buttons.push({ id: 'abandon', label: '返回大厅', x: (1280 - 300) / 2, y: 562, w: 300, h: 46, style: 'ghost' });
+      // 正在等房主开下一局：把「再来一次」置灰并换文案，避免玩家以为点了没反应。
+      const waiting = overlay.resultNotice.length > 0;
+      buttons.push({
+        id: 'retry',
+        label: waiting ? '正在开始下一局…' : '再来一次',
+        x: (1280 - 300) / 2,
+        y: 496,
+        w: 300,
+        h: 54,
+        style: 'accent',
+        enabled: !waiting,
+      });
+      // 联机时这一局的房间还在（自由混战要留给「再来一次」复用），
+      // 所以出口叫「关闭房间」而不是「返回大厅」—— 玩家点了才知道房间真的关了。
+      buttons.push({
+        id: 'abandon',
+        label: ctx.net ? '关闭房间' : '返回大厅',
+        x: (1280 - 300) / 2,
+        y: 562,
+        w: 300,
+        h: 46,
+        style: 'ghost',
+      });
       break;
     }
     case 'settings': {
@@ -849,15 +877,17 @@ function drawSummary(
 ): void {
   const won = overlay.mode === 'victory';
   const pk = oc.pk === true;
+  // 时间到人头打平：两边都算"没赢"，但抬头写成「PK 失败」会说不过去。
+  const tie = pk && (overlay.death?.cause ?? '').includes('平局');
   drawPanel(ctx, 340, 96, 600, 540, { radius: 18 });
   drawHeading(
     ctx,
-    pk ? (won ? 'PK 胜利' : 'PK 失败') : won ? '通关成功' : '远征失败',
+    pk ? (tie ? 'PK 平局' : won ? 'PK 胜利' : 'PK 失败') : won ? '通关成功' : '远征失败',
     640,
     148,
     40,
     'center',
-    won ? '#7ef2c0' : '#ff8a7a',
+    tie ? '#ffd479' : won ? '#7ef2c0' : '#ff8a7a',
   );
   drawHeading(
     ctx,
@@ -911,8 +941,27 @@ function drawSummary(
   ctx.fillText(`${oc.score}`, 720, 474);
   ctx.restore();
 
-  // 联机：一局打完房间已自动解散，得说清楚 —— 房间号消失不是掉线。
-  if (oc.net === true) {
+  // 联机结算出口说明（需求 27）：
+  //   - 有 resultNotice（正在开下一局 / 房主已关房）→ 优先显示它，用醒目色；
+  //   - 否则自由混战说明两个出口分别是什么；
+  //   - 合作模式打完就自动收房，得说清楚"房间没了不是掉线"。
+  if (overlay.resultNotice) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#7ef2c0';
+    ctx.font = '700 12px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(overlay.resultNotice, 640, 622);
+    ctx.restore();
+  } else if (pk) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(206,198,232,0.66)';
+    ctx.font = '600 11px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText('「再来一次」在同一房间直接开下一局 · 「关闭房间」解散房间回大厅', 640, 622);
+    ctx.restore();
+  } else if (oc.net === true) {
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

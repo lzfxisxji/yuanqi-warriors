@@ -3,7 +3,8 @@
  *
  * 在独立端口拉起 server/relay.mjs，模拟两个 WebSocket 客户端走完
  * create → join → start → input → snapshot → gameover → leave 全流程，
- * 并校验权限（非房主 snapshot 被忽略）与房间生命周期（房主离开 → closed）。
+ * 并校验权限（非房主 snapshot / rematch 被忽略）与房间生命周期
+ * （房主离开 → closed；rematch → 广播新 start = 双方重建场景）。
  *
  * 退出码 0 = 全部通过。
  */
@@ -138,6 +139,38 @@ try {
   await e1.next(); // peerJoined
   const meInfo = j2.peers.find((p) => p.id === j2.peerId);
   ok('PK 阵营 = 各自 peerId', cr.mode === 'pk' && meInfo && meInfo.team === j2.peerId);
+
+  // 11) 自由混战「再来一次」：房间不散，只有房主能触发（需求 27）
+  e1.send({ t: 'start' });
+  const pkStart = await e1.next();
+  await e2.next();
+  ok('PK start 广播（含 seed）', pkStart.t === 'start' && typeof pkStart.seed === 'number');
+
+  // 客户端只能**请求**重开，消息只转给房主
+  e2.send({ t: 'rematchRequest' });
+  const wantRematch = await e1.next();
+  ok('rematchRequest 只转给房主（带 from）', wantRematch.t === 'rematchRequest' && wantRematch.from === j2.peerId);
+
+  // 非房主自己发 rematch：必须被忽略，否则任何人都能强行重开
+  let rematchLeaked = false;
+  e2.send({ t: 'rematch' });
+  try {
+    const m = await e1.next(400);
+    if (m.t === 'start') rematchLeaked = true;
+  } catch {
+    /* 超时即正确（未泄漏） */
+  }
+  ok('非房主 rematch 被忽略', !rematchLeaked);
+
+  // 房主重开：广播**新的 start**（新种子 → 双方各自重建场景 = 场景重置）
+  e1.send({ t: 'rematch' });
+  const re1 = await e1.next();
+  const re2 = await e2.next();
+  ok(
+    'rematch 广播新 start（新种子 → 双方重建场景）',
+    re1.t === 'start' && re2.t === 'start' && re2.seed !== pkStart.seed && re2.mode === 'pk',
+  );
+
   e1.send({ t: 'leave' });
   const closed = await e2.next();
   ok('房主离开 → 其余成员收到 closed', closed.t === 'closed');

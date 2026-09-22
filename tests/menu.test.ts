@@ -236,7 +236,7 @@ describe('主菜单右侧面板', () => {
     const joined = render(state)
       .map((t) => t.text)
       .join('|');
-    expect(joined).toContain('自由混战 · 最后存活者胜');
+    expect(joined).toContain('自由混战 · 3 分钟 · 10 杀');
     expect(joined).not.toContain('合作闯关');
   });
 
@@ -561,7 +561,7 @@ describe('联机大厅：模式卡说明文字不溢出（需求16-3）', () => 
 
   test('混战卡说明文字水平居中在卡片内', () => {
     const texts = render(lobbyState('pk'));
-    const desc = '互相可伤害，最后存活者胜，阵亡后可观战';
+    const desc = '3 分钟一把，先击杀 10 人者胜；互相可伤害，阵亡后可观战';
     const lines = texts.filter((t) => desc.includes(t.text) && t.text.length > 0);
     expect(lines.length).toBeGreaterThan(0);
     // 混战卡：x=650 w=360 → 中心 830

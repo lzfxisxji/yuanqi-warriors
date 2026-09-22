@@ -207,6 +207,7 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
       dirY: n.y,
       knockback: 6,
       color: def.colors.glow,
+      ownerTeam: player.team,
     });
     if (Math.random() < fire.dt * 9) {
       ctx.particles.hitSparks(t.x, t.y, player.aimAngle, def.colors.glow, 3, 0.6);
@@ -292,6 +293,7 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
       dirY: n.y,
       knockback: def.knockback,
       color: def.colors.glow,
+      ownerTeam: player.team,
     });
     ctx.particles.hitSparks(t.x, t.y, baseAngle, def.colors.glow, crit ? 9 : 5, crit ? 1.15 : 0.85);
     hits++;

@@ -4,7 +4,7 @@
  * 每种 AI 行为都在 performAttack / updateMovement 中体现差异，而不是只改数值。
  */
 import { TAU, RNG, angleTo, clamp, dist, normalize } from '../core/math';
-import type { DamageResult } from '../core/types';
+import type { DamageResult, Team } from '../core/types';
 import type { EnemyDef, EnemyState } from '../data/enemies';
 import { scaledHp, scaledProjectileDamage } from '../data/enemies';
 import type { ProjectileSpec } from './projectile';
@@ -33,6 +33,11 @@ const CONTACT_RANGE_PAD = 6;
 export class Enemy extends Entity {
   readonly def: EnemyDef;
   state: EnemyState = 'idle';
+  /**
+   * 最后对它造成伤害的玩家阵营（自由混战的人头归属）。
+   * 没人传 `ownerTeam` 时保持 null —— 单机/合作照旧只记团队总击杀。
+   */
+  killedByTeam: Team | null = null;
   stateTime = 0;
   /** 攻击冷却计时 */
   attackTimer = 0;
@@ -91,6 +96,8 @@ export class Enemy extends Entity {
 
   applyDamage(amount: number, opts: HitOptions): DamageResult {
     if (this.dead) return { applied: 0, crit: opts.crit, killed: false, blocked: true, dodged: false };
+    // 记下"最后一下是谁打的"：自由混战靠它把击杀算到正确的玩家头上。
+    if (opts.ownerTeam) this.killedByTeam = opts.ownerTeam;
     this.hp -= amount;
     this.damageTaken += amount;
     this.hitFlash = Math.max(this.hitFlash, 0.16);
