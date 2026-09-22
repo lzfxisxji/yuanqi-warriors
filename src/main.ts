@@ -527,10 +527,9 @@ class App implements GameHost {
     this.audio.setMusicIntensity(0);
     this.game?.dispose();
     this.game = null;
-    // 联机对局结束：关闭连接，避免残留房间
-    this.lobbyNet?.close();
-    this.lobbyNet = null;
-    this.netRoomCode = '';
+    // 一局结束（含联机「自由混战」）：主动离房 + 断开连接，彻底**解散并清空房间**，
+    // 同时清掉本地保存的房间号 —— 否则上一局的房间会在菜单页/刷新后残留（需求 25）。
+    this.closeLobby();
     this.scene = 'menu';
     this.menuState = createMenuState();
     this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());

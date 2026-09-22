@@ -70,6 +70,15 @@ describe('房间状态持久化（刷新后仍显示当前房间）', () => {
     expect(restoreRoom('x')).toBeNull();
   });
 
+  test('联机一局结束后房间被清空（不残留上一局的房间号）', () => {
+    // 自由混战：建房（pk）→ 写入本地存储
+    persistRoom(makeLobby({ mode: 'pk' }));
+    expect(restoreRoom('x')?.code).toBe('AB12');
+    // 对局结束：App.returnToMenu → closeLobby → clearRoomStore，房间彻底解散
+    clearRoomStore();
+    expect(restoreRoom('x')).toBeNull();
+  });
+
   test('未真正在房间内（idle）不写入', () => {
     persistRoom(makeLobby({ phase: 'idle', code: '' }));
     expect(restoreRoom('x')).toBeNull();
