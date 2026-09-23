@@ -244,7 +244,11 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
     drag: 0,
   });
   ctx.audio.play('laser', 0.35);
-  ctx.shake.add(0.008);
+  // 需求 32：棱镜激光**不做屏幕震动**。
+  // 这里原本有一句"每帧" `ctx.shake.add(0.008)`，但 `ScreenShake.update` 是按**真实时间**衰减的
+  // （每帧 `dt × 1.7`）。在 219 FPS（截图实测）下加入速率 ≈ 0.008 × 219 = 1.75/s 已超过 1.7/s 的衰减，
+  // trauma 于是持续攀升 → 长按一两秒后整屏开始抖；而 60 FPS 下加入 0.48/s 远小于衰减，完全不抖。
+  // 也就是"是否震屏取决于帧率"的隐性 bug。持续光束本身不需要震屏，故整条移除。
 }
 
 /**
