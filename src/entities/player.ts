@@ -87,6 +87,8 @@ export class Player extends Entity {
    */
   meleeSwingTimer = 0;
   meleeSwingDuration = 0.42;
+  /** 本次挥砍是否「360° 全向」攻击（蓄力释放的重击）：渲染据此画整圈光环而非扇形扇面。 */
+  meleeSwingFullCircle = false;
 
   /** 技能状态 */
   skillCooldown = 0;
@@ -269,10 +271,11 @@ export class Player extends Entity {
     return clamp(1 - this.meleeSwingTimer / total, 0, 1);
   }
 
-  /** 开始一次挥砍动画（武器系统在命中判定前调用）。 */
-  startMeleeSwing(duration = 0.42): void {
+  /** 开始一次挥砍动画（武器系统在命中判定前调用）。`fullCircle=true` 表示这是蓄力释放的全向重击。 */
+  startMeleeSwing(duration = 0.42, fullCircle = false): void {
     this.meleeSwingDuration = Math.max(0.05, duration);
     this.meleeSwingTimer = this.meleeSwingDuration;
+    this.meleeSwingFullCircle = fullCircle;
   }
 
   /**
@@ -396,6 +399,7 @@ export class Player extends Entity {
       this.deathTimer += dt;
       this.regening = false;
       this.meleeSwingTimer = 0; // 死亡后不再保持挥砍姿势
+      this.meleeSwingFullCircle = false;
       this.updateCommon(dt);
       return;
     }

@@ -524,6 +524,26 @@ function drawMeleeSwingArc(ctx: CanvasRenderingContext2D, player: Player, aim: n
 
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
+  // 需求 31：蓄力释放的全向重击 —— 画一整圈光环（而不是扇形扇面），与 360° 判定对应。
+  if (player.meleeSwingFullCircle) {
+    const g = ctx.createRadialGradient(0, 0, inner, 0, 0, outer);
+    g.addColorStop(0, withAlpha(def.colors.glow, 0));
+    g.addColorStop(0.55, withAlpha(def.colors.glow, 0.34 * fade));
+    g.addColorStop(1, withAlpha(def.colors.core, 0.16 * fade));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, outer, 0, TAU);
+    ctx.arc(0, 0, inner, 0, TAU, true);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = withAlpha(def.colors.core, 0.72 * fade);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, outer, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
   if ((def.swingArc ?? 1.2) < 0.8) {
     const reach = inner + (outer - inner) * easeOutCubic(clamp((p - 0.18) / 0.44, 0, 1));
     const ex = Math.cos(aim) * reach;

@@ -263,8 +263,12 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
  *   按住时间过短（< `MELEE_CHARGE_MIN_HOLD`）视为"点按"，蓄力倍率就是 1×，保持原手感。
  * 这样"点一下打一下"和"按住蓄满再松手打出 2.5 倍重击"两种用法都成立。
  *
- * 另外，挥砍的扇形内**敌方弹丸（光波）会被直接打掉**（需求 30）：用 `ProjectileSystem.intercept`
- * 把非己方阵营、落在扇形里的弹丸一并清除，并给一点火花反馈。
+ * **攻击范围（需求 31）**：点按轻挥仍是「扇形」；但只要有蓄力（ratio > 0，即按住 ≥ MIN_HOLD），
+ * 释放的就是一次 **360° 全向重击**——命中判定不再做任何角度过滤，敌方弹丸拦截（intercept）
+ * 与木箱破坏（damageObstacles）也一并覆盖整圈。视觉上 `drawMeleeSwingArc` 会据此画整圈光环。
+ *
+ * 另外，挥砍的扇形/全向范围内**敌方弹丸（光波）会被直接打掉**（需求 30）：用 `ProjectileSystem.intercept`
+ * 把非己方阵营、落在该范围内的弹丸一并清除，并给一点火花反馈。
  */
 function updateMelee(fire: WeaponFireContext, firing: boolean): void {
   const { player, ctx } = fire;
@@ -299,11 +303,13 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
   const chargeMul = 1 + (MELEE_CHARGE_MAX_MUL - 1) * ratio;
   const damage = baseDamage * chargeMul;
   const charged = ratio >= 1;
+  // 需求 31：只要有蓄力（按住 ≥ MIN_HOLD），释放的就是 360° 全向重击，不再做角度过滤。
+  const fullCircle = ratio > 0;
 
   if (!player.canFire()) return; // 理论上蓄力期间 cooldown 不会转好，但兜底防重击穿冷却
 
   player.consumeShot(1);
-  player.startMeleeSwing(meleeSwingDuration(def.fireRate * mods.fireRateMul));
+  player.startMeleeSwing(meleeSwingDuration(def.fireRate * mods.fireRateMul), fullCircle);
 
   let hits = 0;
   let critical = false;
@@ -313,9 +319,11 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     const dy = t.y - player.y;
     const d = Math.hypot(dx, dy);
     if (d > range + t.radius) continue;
-    // 目标体积越大越容易"擦到边"：按半径给一点角度宽容，否则打大体型敌人时手感很苛刻。
-    const slack = Math.min(0.5, t.radius / Math.max(1, d));
-    if (Math.abs(angleDelta(baseAngle, Math.atan2(dy, dx))) > halfArc + slack) continue;
+    if (!fullCircle) {
+      // 目标体积越大越容易"擦到边"：按半径给一点角度宽容，否则打大体型敌人时手感很苛刻。
+      const slack = Math.min(0.5, t.radius / Math.max(1, d));
+      if (Math.abs(angleDelta(baseAngle, Math.atan2(dy, dx))) > halfArc + slack) continue;
+    }
 
     const n = d > 0.001 ? { x: dx / d, y: dy / d } : { x: Math.cos(baseAngle), y: Math.sin(baseAngle) };
     const crit = Math.random() < clamp(def.crit + mods.critAdd, 0, 0.95);
@@ -333,17 +341,19 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     hits++;
   }
 
-  // 近战同样能劈开挡路的木箱（需求 23）：扇形内的可破坏障碍一并受击。
+  // 近战同样能劈开挡路的木箱（需求 23）：范围内的可破坏障碍一并受击。
+  // 全向重击时把半角设为 π，让障碍破坏也覆盖整圈。
   // 不计入 `hits`，所以"只砍到箱子、没砍到人"时依然走抡空尘效，反馈不会被吞。
-  fire.damageObstacles?.(player.x, player.y, baseAngle, halfArc, range, damage);
+  fire.damageObstacles?.(player.x, player.y, baseAngle, fullCircle ? Math.PI : halfArc, range, damage);
 
-  // 需求 30：挥砍扇形内打掉敌方光波（弹丸）。非己方阵营 + 落在扇形里即清除。
+  // 需求 30：挥砍范围内打掉敌方光波（弹丸）。非己方阵营 + 落在范围内即清除；
+  // 全向重击时把半角设为 π，整圈光波一起清掉。
   fire.projectiles.intercept?.({
     team: player.team,
     x: player.x,
     y: player.y,
     angle: baseAngle,
-    halfArc,
+    halfArc: fullCircle ? Math.PI : halfArc,
     range,
     onHit: (p) => {
       ctx.particles.hitSparks(p.x, p.y, baseAngle, '#ffffff', 6, 1.1);
@@ -351,10 +361,12 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     },
   });
 
-  // 抡空了也要有反馈：在弧线前端扬一小撮尘，提示"挥过去了但没碰到人"。
+  // 抡空了也要有反馈：扬一小撮尘，提示"挥过去了但没碰到人"。
+  // 全向重击时整圈撒一圈，普通扇形只在弧线前端撒。
   if (hits === 0) {
-    for (let i = 0; i < 3; i++) {
-      const a = baseAngle + (Math.random() - 0.5) * halfArc * 2;
+    const n = fullCircle ? 12 : 3;
+    for (let i = 0; i < n; i++) {
+      const a = fullCircle ? (i / n) * TAU : baseAngle + (Math.random() - 0.5) * halfArc * 2;
       ctx.particles.spawn({
         kind: 'ember',
         x: player.x + Math.cos(a) * range * 0.9,

@@ -8,8 +8,8 @@
  * 这里锁死几条关键约束，破坏任何一条都会立刻变红：
  *   - 四把武器都在表里，id / 名称唯一，且都是近战；
  *   - 近战没有弹匣：连续挥砍不消耗弹药、不进换弹、永不 `startReload`；
- *   - 命中范围 = 扇形（距离 ≤ range 且与瞄准方向夹角 ≤ swingArc/2），
- *     身后的敌人打不到、超距的敌人打不到；
+ *   - 命中范围：点按轻挥 = 扇形（距离 ≤ range 且与瞄准方向夹角 ≤ swingArc/2），身后打不到；
+ *     蓄力释放（需求 31）= 360° 全向，整圈敌人都能打到；超距的都打不到；
  *   - 长枪的张角明显比横扫类窄（"直线贯穿"），狼牙棒单次伤害最高，木棍攻速最快；
  *   - 一次挥砍命中扇形内**所有**目标（近战天然穿透）；
  *   - 冷却生效：同一次冷却窗口内不会重复结算伤害。
@@ -526,5 +526,62 @@ describe('近战：打掉敌方光波（需求 30）', () => {
     const active: Projectile[] = [];
     ps.collect(active);
     expect(active.length).toBe(0); // 光波被打掉
+  });
+});
+
+// ---------------------------------------------------------------- 蓄力全向（需求 31）
+
+describe('近战：蓄力释放为 360° 全向（需求 31）', () => {
+  /** 按住 holdFrames 帧蓄力后松开释放；extra 用来注入真实弹丸系统等。 */
+  function chargeAndRelease(p: Player, targets: FakeTarget[], holdFrames: number, extra: Partial<WeaponFireContext> = {}): void {
+    const ctx = swingCtx(p, targets, extra);
+    for (let i = 0; i < holdFrames; i++) updateWeapon(ctx, true);
+    updateWeapon(ctx, false);
+  }
+
+  test('点按轻挥仍是扇形：身后的敌人打不到', () => {
+    noCrit();
+    const p = meleePlayer('wood_stick');
+    const front = makeTarget(40, 0);
+    const back = makeTarget(-40, 0); // 正后方
+    fire(p, [front, back]);
+    expect(front.hits).toBe(1);
+    expect(back.hits).toBe(0);
+    expect(p.meleeSwingFullCircle).toBe(false);
+  });
+
+  test('蓄力释放是 360°：正后方（180°）的敌人也能打到', () => {
+    noCrit();
+    const p = meleePlayer('wood_stick');
+    const front = makeTarget(40, 0);
+    const back = makeTarget(-40, 0); // 正后方
+    chargeAndRelease(p, [front, back], 10); // 按住约 0.17s > MIN_HOLD
+    expect(front.hits).toBe(1);
+    expect(back.hits).toBe(1); // 全向，背后也命中
+    expect(p.meleeSwingFullCircle).toBe(true);
+  });
+
+  test('蓄力释放时整圈敌方光波都被清掉（含背后）', () => {
+    const p = meleePlayer('wood_stick');
+    const ps = new ProjectileSystem();
+    ps.spawn({ kind: 'orb', team: 'enemy', x: p.x, y: p.y - 40, angle: 0, speed: 0, damage: 5, radius: 8, life: 3 }); // 背后（正上方）
+    ps.spawn({ kind: 'orb', team: 'enemy', x: p.x + 40, y: p.y, angle: 0, speed: 0, damage: 5, radius: 8, life: 3 }); // 前方
+    chargeAndRelease(p, [], 10, { projectiles: ps });
+    const active: Projectile[] = [];
+    ps.collect(active);
+    expect(active.length).toBe(0); // 整圈清掉
+  });
+
+  test('蓄力释放时木箱破坏也覆盖整圈（halfArc = π）', () => {
+    noCrit();
+    const p = meleePlayer('wood_stick');
+    const calls: number[][] = [];
+    const ctx: WeaponFireContext = swingCtx(p, [], {
+      damageObstacles: (x, y, angle, halfArc, range, damage) => calls.push([x, y, angle, halfArc, range, damage]),
+    });
+    for (let i = 0; i < 10; i++) updateWeapon(ctx, true);
+    updateWeapon(ctx, false);
+    expect(calls.length).toBe(1);
+    expect(calls[0]![3]).toBeCloseTo(Math.PI, 6); // halfArc = π 表示全向
   });
 });
