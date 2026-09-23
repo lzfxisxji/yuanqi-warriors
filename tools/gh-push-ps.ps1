@@ -22,13 +22,22 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $tmp = Join-Path $env:TEMP ('ghpush-' + [guid]::NewGuid().ToString('N') + '.json')
 
+# Windows PowerShell 5.1 decodes NATIVE stdout (gh / git) with the OEM codepage by default,
+# which turns a non-ASCII commit message into mojibake (`需求32` -> `闂団偓濮?2`) and can even
+# make the response JSON unparsable. Force both directions to UTF-8 (no BOM).
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+
 function GhJson {
   param([string]$Path, [string]$Method, [string]$BodyFile)
   $a = @('api', $Path, '-X', $Method)
   if ($BodyFile) { $a += @('--input', $BodyFile) }
   $out = & gh @a
   if ($LASTEXITCODE -ne 0) { throw ("gh api $Method $Path failed (exit $LASTEXITCODE)") }
-  $text = ($out | Out-String).Trim()
+  # NOT `Out-String`: it wraps at the console width, and a wrap landing inside a JSON
+  # string literal injects a raw newline -> "传入的对象无效" from ConvertFrom-Json.
+  # `-join` reconstructs the original bytes exactly (PowerShell splits native stdout by line).
+  $text = ($out -join "`n").Trim()
   if (-not $text) { return $null }
   return ($text | ConvertFrom-Json)
 }
