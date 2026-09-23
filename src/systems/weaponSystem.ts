@@ -3,6 +3,7 @@
  * 并处理后坐、枪口火焰、抛壳、屏幕震动与音效，保证每种武器的反馈都不同。
  */
 import { TAU, angleDelta, clamp, distPointToSegment, normalize } from '../core/math';
+import { MELEE_CHARGE_MAX_MUL, MELEE_CHARGE_MIN_HOLD, MELEE_CHARGE_TIME } from '../data/config';
 import type { Player } from '../entities/player';
 import type { ProjectileSystem } from '../entities/projectile';
 import type { Boss } from '../entities/boss';
@@ -39,6 +40,7 @@ export function updateWeapon(fire: WeaponFireContext, firing: boolean): void {
 
   if (player.dead) {
     player.beamActive = false;
+    player.meleeCharge = 0; // 死亡即清空蓄力，避免复活/重开时残留一段"免费重击"
     return;
   }
 
@@ -246,7 +248,7 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
 }
 
 /**
- * 近战类（需求 21）：一次挥砍 = 一个**扇形判定**。
+ * 近战类（需求 21 + 需求 30）：一次挥砍 = 一个**扇形判定**。
  *
  * 以瞄准方向为中线、总张角 `def.swingArc`、半径 `def.range` 的扇形内部，
  * 所有敌方目标当帧全部命中（近战天然"穿透"，所以不需要贯穿计数）。
@@ -254,19 +256,51 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
  *
  * 与远程最大的区别：**不产生任何弹丸**，也就不吃 pierce / bounce / spread；
  * 代价是必须贴脸，收益是单次伤害高、必定命中（没有飞行时间，敌人闪不掉）。
+ *
+ * 蓄力（需求 30）：`firing` 表示攻击键**当前是否被按住**。
+ * - 按住 = 积累蓄力（每帧 +dt，封顶 `MELEE_CHARGE_TIME`），这一帧**不挥砍**；
+ * - 松开 = 若蓄力 > 0 则释放一次挥砍，伤害 = 原伤害 × (1 + (MAX-1) × ratio)；
+ *   按住时间过短（< `MELEE_CHARGE_MIN_HOLD`）视为"点按"，蓄力倍率就是 1×，保持原手感。
+ * 这样"点一下打一下"和"按住蓄满再松手打出 2.5 倍重击"两种用法都成立。
+ *
+ * 另外，挥砍的扇形内**敌方弹丸（光波）会被直接打掉**（需求 30）：用 `ProjectileSystem.intercept`
+ * 把非己方阵营、落在扇形里的弹丸一并清除，并给一点火花反馈。
  */
 function updateMelee(fire: WeaponFireContext, firing: boolean): void {
   const { player, ctx } = fire;
   player.beamActive = false;
-  if (!firing || !player.canFire()) return;
+
+  if (player.dead) {
+    player.meleeCharge = 0;
+    return;
+  }
 
   const def = player.currentWeapon.def;
   const mods = player.mods;
   const range = def.range * mods.rangeMul;
   const halfArc = Math.max(0.08, (def.swingArc ?? 1.2) * 0.5);
-  const critChance = clamp(def.crit + mods.critAdd, 0, 0.95);
   const baseAngle = player.aimAngle;
-  const damage = def.damage * mods.damageMul;
+  const baseDamage = def.damage * mods.damageMul;
+
+  // —— 蓄力阶段：按住且能开火时累加，这一帧不挥砍 ——
+  if (firing) {
+    if (player.canFire()) {
+      player.meleeCharge = Math.min(MELEE_CHARGE_TIME, player.meleeCharge + fire.dt);
+    }
+    return;
+  }
+
+  // —— 释放阶段：松开且此前在蓄力，才挥砍 ——
+  if (player.meleeCharge <= 0) return;
+  const held = player.meleeCharge;
+  player.meleeCharge = 0;
+  // 极短按压视为点按：不享受蓄力加成
+  const ratio = held < MELEE_CHARGE_MIN_HOLD ? 0 : Math.min(1, held / MELEE_CHARGE_TIME);
+  const chargeMul = 1 + (MELEE_CHARGE_MAX_MUL - 1) * ratio;
+  const damage = baseDamage * chargeMul;
+  const charged = ratio >= 1;
+
+  if (!player.canFire()) return; // 理论上蓄力期间 cooldown 不会转好，但兜底防重击穿冷却
 
   player.consumeShot(1);
   player.startMeleeSwing(meleeSwingDuration(def.fireRate * mods.fireRateMul));
@@ -284,14 +318,14 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     if (Math.abs(angleDelta(baseAngle, Math.atan2(dy, dx))) > halfArc + slack) continue;
 
     const n = d > 0.001 ? { x: dx / d, y: dy / d } : { x: Math.cos(baseAngle), y: Math.sin(baseAngle) };
-    const crit = Math.random() < critChance;
+    const crit = Math.random() < clamp(def.crit + mods.critAdd, 0, 0.95);
     critical = critical || crit;
     t.applyDamage(damage * (crit ? 1.6 : 1), {
       crit,
       source: 'melee',
       dirX: n.x,
       dirY: n.y,
-      knockback: def.knockback,
+      knockback: def.knockback * (charged ? 1.4 : 1), // 满蓄力多带一点击退，重击感更强
       color: def.colors.glow,
       ownerTeam: player.team,
     });
@@ -302,6 +336,20 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
   // 近战同样能劈开挡路的木箱（需求 23）：扇形内的可破坏障碍一并受击。
   // 不计入 `hits`，所以"只砍到箱子、没砍到人"时依然走抡空尘效，反馈不会被吞。
   fire.damageObstacles?.(player.x, player.y, baseAngle, halfArc, range, damage);
+
+  // 需求 30：挥砍扇形内打掉敌方光波（弹丸）。非己方阵营 + 落在扇形里即清除。
+  fire.projectiles.intercept?.({
+    team: player.team,
+    x: player.x,
+    y: player.y,
+    angle: baseAngle,
+    halfArc,
+    range,
+    onHit: (p) => {
+      ctx.particles.hitSparks(p.x, p.y, baseAngle, '#ffffff', 6, 1.1);
+      ctx.shake.add(0.1);
+    },
+  });
 
   // 抡空了也要有反馈：在弧线前端扬一小撮尘，提示"挥过去了但没碰到人"。
   if (hits === 0) {
@@ -322,8 +370,9 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     }
   }
 
+  if (charged) ctx.shake.add(0.25); // 满蓄力重击额外一顿
   ctx.shake.add(def.shakeAmount * (hits > 0 ? 1 + Math.min(0.6, hits * 0.12) : 0.5));
-  ctx.audio.play(def.sound, critical ? 1 : 0.9);
+  ctx.audio.play(def.sound, critical || charged ? 1 : 0.9);
 }
 
 /**

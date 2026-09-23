@@ -226,6 +226,16 @@ export const TRAINING_SEED = 0x72410101;
  */
 export const DASH_HIT_PAD = 14;
 
+/**
+ * 近战蓄力（需求 30）：按住近战攻击键积累蓄力，松开时释放一次挥砍。
+ * - 蓄力时间达到 `MELEE_CHARGE_TIME` 秒即"满蓄力"，伤害为原伤害的 `MELEE_CHARGE_MAX_MUL` 倍；
+ * - 蓄力比例在 0 → 1 之间线性插值（伤害 = 原伤害 × (1 + (MAX-1) × ratio)），所以未满也更强；
+ * - 但为了保留"点按即原伤害"的手感，按住时间小于 `MELEE_CHARGE_MIN_HOLD` 视为没蓄力，伤害就是 1×。
+ */
+export const MELEE_CHARGE_TIME = 2.5; // 落在需求要求的 2~3 秒区间
+export const MELEE_CHARGE_MAX_MUL = 2.5;
+export const MELEE_CHARGE_MIN_HOLD = 0.14;
+
 /** 联机玩家配色（按加入顺序分配，索引 0 固定为本地房主色）。 */
 export const PLAYER_COLORS = [
   '#5cc8ff',

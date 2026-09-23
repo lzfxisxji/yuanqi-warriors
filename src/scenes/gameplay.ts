@@ -17,6 +17,7 @@ import {
   DOOR_LOCK_DELAY,
   FLOOR_COUNT,
   MAX_PLAYERS,
+  MELEE_CHARGE_TIME,
   NET_INPUT_HZ,
   NET_SNAPSHOT_HZ,
   PLAYER_COLORS,
@@ -2286,6 +2287,12 @@ export class GameplayScene {
     }
     list.sort((a, b) => a.y - b.y);
     for (const d of list) d.draw();
+    // 近战蓄力指示环（需求 30）：任何在蓄力的近战玩家都画一圈进度弧
+    for (const pl of this.allPlayers) {
+      if (pl.currentWeapon.def.kind !== 'melee') continue;
+      if (pl.meleeCharge <= 0) continue;
+      drawMeleeChargeRing(ctx, pl);
+    }
     // 名字标签统一在实体之上绘制
     if (this.isMultiplayer()) {
       for (const rp of this.allPlayers) {
@@ -3234,6 +3241,37 @@ function drawPlayerTag(ctx: CanvasRenderingContext2D, player: Player, isLocal: b
   ctx.fillRect(player.x - w / 2, y - 15, w, 17);
   ctx.fillStyle = isLocal ? '#fff4d8' : (player.netColor ?? '#cfe8ff');
   ctx.fillText(name, player.x, y);
+  ctx.restore();
+}
+
+/** 近战蓄力指示环（需求 30）：蓄力进度 = 一段从正上方顺时针生长的弧，满蓄力变金色并轻微脉冲。 */
+function drawMeleeChargeRing(ctx: CanvasRenderingContext2D, player: Player): void {
+  const ratio = clamp(player.meleeCharge / MELEE_CHARGE_TIME, 0, 1);
+  const full = ratio >= 1;
+  const r = player.radius + 13;
+  ctx.save();
+  ctx.lineCap = 'round';
+  // 底环
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, r, 0, TAU);
+  ctx.stroke();
+  // 进度弧
+  ctx.strokeStyle = full ? '#ffd479' : '#9fe8ff';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, r, -Math.PI / 2, -Math.PI / 2 + TAU * ratio);
+  ctx.stroke();
+  if (full) {
+    const pulse = 0.45 + 0.45 * Math.sin(performance.now() / 70);
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = '#ffd479';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, r + 6, 0, TAU);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 

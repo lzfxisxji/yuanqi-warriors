@@ -1,7 +1,7 @@
 /** 玩家：移动、瞄准、射击状态、两名武器槽、主动技能、护盾/无敌帧。 */
 import { TAU, clamp, normalize } from '../core/math';
 import type { DamageResult, Team } from '../core/types';
-import { OUT_OF_COMBAT_DELAY, PLAYER_ACCEL, PLAYER_FRICTION, PLAYER_IFRAME, PLAYER_RADIUS } from '../data/config';
+import { MELEE_CHARGE_TIME, OUT_OF_COMBAT_DELAY, PLAYER_ACCEL, PLAYER_FRICTION, PLAYER_IFRAME, PLAYER_RADIUS } from '../data/config';
 import type { CharacterDef } from '../data/characters';
 import type { Mods } from '../data/upgrades';
 import { defaultMods } from '../data/upgrades';
@@ -74,6 +74,11 @@ export class Player extends Entity {
   attackTimer = 0;
   /** 攻击前摇计时（用于美术的蓄力动作） */
   chargeTimer = 0;
+  /**
+   * 近战蓄力累加器（需求 30）：按住近战攻击键时每帧 +dt，松开释放挥砍后清零。
+   * 与 `chargeTimer` 分开：后者被 `updateTimers` 每帧递减且只给敌人美术用，不能拿来累加。
+   */
+  meleeCharge = 0;
 
   /**
    * 近战挥砍动画（需求 21）：剩余时间 / 总时长，单位秒。
@@ -268,6 +273,16 @@ export class Player extends Entity {
   startMeleeSwing(duration = 0.42): void {
     this.meleeSwingDuration = Math.max(0.05, duration);
     this.meleeSwingTimer = this.meleeSwingDuration;
+  }
+
+  /**
+   * 当前近战蓄力比例：0 = 没在蓄，1 = 满蓄力（达到 `MELEE_CHARGE_TIME`）。
+   * 渲染层用它画蓄力环；武器系统用它算伤害倍率。
+   */
+  get meleeChargeRatio(): number {
+    if (this.meleeCharge <= 0) return 0;
+    const t = MELEE_CHARGE_TIME;
+    return Math.min(1, this.meleeCharge / t);
   }
 
   /** 激光类持续消耗弹药，返回是否成功消耗。 */

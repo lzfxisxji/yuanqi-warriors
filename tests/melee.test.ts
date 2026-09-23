@@ -21,7 +21,8 @@ import { MELEE_DAMAGE_SCALE, WEAPONS, getWeaponDef, rollWeaponId } from '../src/
 import { RNG } from '../src/core/math';
 import type { DamageContext } from '../src/systems/combat';
 import type { HitEntity } from '../src/systems/combat';
-import type { ProjectileSystem } from '../src/entities/projectile';
+import type { Projectile } from '../src/entities/projectile';
+import { ProjectileSystem } from '../src/entities/projectile';
 import type { Room } from '../src/dungeon/room';
 import { updateWeapon, type WeaponFireContext } from '../src/systems/weaponSystem';
 import type { DamageResult } from '../src/core/types';
@@ -88,23 +89,36 @@ function meleePlayer(weaponId: string): Player {
   return p;
 }
 
-/** 跑一帧开火逻辑，返回这一帧生成的弹丸数（近战恒为 0）。 */
-function fire(p: Player, targets: FakeTarget[], firing = true): { spawned: number } {
-  const shots = { count: 0 };
-  const ctx: WeaponFireContext = {
+/** 构造一帧开火上下文（默认用空转弹丸系统，不真实弹射）。 */
+function swingCtx(p: Player, targets: FakeTarget[], extra: Partial<WeaponFireContext> = {}): WeaponFireContext {
+  return {
     player: p,
     room: {} as Room,
     ctx: makeDamageCtx(),
+    projectiles: { spawn: () => undefined } as unknown as ProjectileSystem,
+    targets,
+    dt: 1 / 60,
+    time: 0,
+    ...extra,
+  };
+}
+
+/**
+ * 跑一次"完整挥砍"：按下（蓄力 1 帧）→ 松开（释放挥砍）。
+ * 需求 30 之后近战改为"按住蓄力、松开释放"，所以单次攻击必须由 press+release 组成；
+ * 极短按压（< MELEE_CHARGE_MIN_HOLD）视为点按，伤害即为原伤害，从而旧测试语义不变。
+ */
+function fire(p: Player, targets: FakeTarget[], firing = true): { spawned: number } {
+  const shots = { count: 0 };
+  const ctx = swingCtx(p, targets, {
     projectiles: {
       spawn: () => {
         shots.count += 1;
       },
     } as unknown as ProjectileSystem,
-    targets,
-    dt: 1 / 60,
-    time: 0,
-  };
-  updateWeapon(ctx, firing);
+  });
+  if (firing) updateWeapon(ctx, true);
+  updateWeapon(ctx, false);
   return { spawned: shots.count };
 }
 
@@ -344,20 +358,14 @@ describe('近战：弹药与挥砍动画', () => {
 // ---------------------------------------------------------------- 破坏障碍
 
 describe('近战：可破坏障碍（需求 23）', () => {
-  /** 跑一帧并把 damageObstacles 收到的参数记下来。 */
+  /** 跑一次完整挥砍并把 damageObstacles 收到的参数记下来。 */
   function fireRecording(p: Player, targets: FakeTarget[], firing = true): number[][] {
     const calls: number[][] = [];
-    const ctx: WeaponFireContext = {
-      player: p,
-      room: {} as Room,
-      ctx: makeDamageCtx(),
-      projectiles: { spawn: () => undefined } as unknown as ProjectileSystem,
-      targets,
+    const ctx = swingCtx(p, targets, {
       damageObstacles: (x, y, angle, halfArc, range, damage) => calls.push([x, y, angle, halfArc, range, damage]),
-      dt: 1 / 60,
-      time: 0,
-    };
-    updateWeapon(ctx, firing);
+    });
+    if (firing) updateWeapon(ctx, true);
+    updateWeapon(ctx, false);
     return calls;
   }
 
@@ -404,5 +412,119 @@ describe('近战：可破坏障碍（需求 23）', () => {
     };
     updateWeapon(ctx, true);
     expect(called).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------- 蓄力（需求 30）
+
+describe('近战：蓄力（需求 30）', () => {
+  const DT = 1 / 60;
+
+  test('点按（极短蓄力）伤害就是原伤害，不吃蓄力加成', () => {
+    noCrit();
+    const p = meleePlayer('spiked_mace'); // 狼牙棒单次伤害最高
+    const t = makeTarget(40, 0);
+    fire(p, [t]); // 默认 = 按下即松开 → 极短蓄力
+    expect(t.taken).toBeCloseTo(getWeaponDef('spiked_mace').damage, 6);
+  });
+
+  test('满蓄力（按住 ≥ MELEE_CHARGE_TIME）释放 = 原伤害 × 2.5', () => {
+    noCrit();
+    const p = meleePlayer('spiked_mace');
+    const t = makeTarget(40, 0);
+    const ctx = swingCtx(p, [t]);
+    for (let i = 0; i < 180; i++) updateWeapon(ctx, true); // 按住 3s（> 2.5s 封顶）
+    updateWeapon(ctx, false); // 松开 → 重击
+    expect(t.taken).toBeCloseTo(getWeaponDef('spiked_mace').damage * 2.5, 6);
+  });
+
+  test('半蓄力（按住 MELEE_CHARGE_TIME 的一半）≈ 原伤害 × 1.75', () => {
+    noCrit();
+    const p = meleePlayer('spiked_mace');
+    const t = makeTarget(40, 0);
+    const ctx = swingCtx(p, [t]);
+    for (let i = 0; i < 75; i++) updateWeapon(ctx, true); // 1.25s = 2.5s 的一半
+    updateWeapon(ctx, false);
+    expect(t.taken).toBeCloseTo(getWeaponDef('spiked_mace').damage * 1.75, 6);
+  });
+
+  test('只有在"松开"那一刻才挥砍；按住期间不结算伤害', () => {
+    noCrit();
+    const p = meleePlayer('wood_stick');
+    const t = makeTarget(40, 0);
+    const ctx = swingCtx(p, [t]);
+    for (let i = 0; i < 200; i++) {
+      updateWeapon(ctx, true); // 全程按住，只蓄力
+      expect(t.hits).toBe(0);
+    }
+    expect(p.meleeChargeRatio).toBe(1); // 已蓄满
+    updateWeapon(ctx, false); // 松开 → 这一帧才打出去
+    expect(t.hits).toBe(1);
+  });
+
+  test('蓄力过程中死亡会清空蓄力，不再释放', () => {
+    const p = meleePlayer('wood_stick');
+    const ctx = swingCtx(p, [makeTarget(40, 0)]);
+    for (let i = 0; i < 30; i++) updateWeapon(ctx, true);
+    expect(p.meleeChargeRatio).toBeGreaterThan(0);
+    p.dead = true;
+    updateWeapon(ctx, false); // 死亡后松开不应挥砍
+    expect(p.meleeCharge).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------- 打掉敌方光波（需求 30）
+
+describe('近战：打掉敌方光波（需求 30）', () => {
+  test('挥砍扇形内、非己方阵营的弹丸被清除', () => {
+    const p = meleePlayer('wood_stick');
+    const ps = new ProjectileSystem();
+    ps.spawn({ kind: 'orb', team: 'enemy', x: p.x + 40, y: p.y, angle: 0, speed: 0, damage: 5, radius: 8, life: 3 });
+    const ctx = swingCtx(p, [], { projectiles: ps });
+    updateWeapon(ctx, true); // 按下蓄力
+    updateWeapon(ctx, false); // 松开 → 挥砍 → 扇形内打掉光波
+    const active: Projectile[] = [];
+    ps.collect(active);
+    expect(active.length).toBe(0);
+  });
+
+  test('友方（同阵营）弹丸不会被误清', () => {
+    const p = meleePlayer('wood_stick');
+    const ps = new ProjectileSystem();
+    ps.spawn({ kind: 'orb', team: p.team, x: p.x + 40, y: p.y, angle: 0, speed: 0, damage: 5, radius: 8, life: 3 });
+    const ctx = swingCtx(p, [], { projectiles: ps });
+    updateWeapon(ctx, true);
+    updateWeapon(ctx, false);
+    const active: Projectile[] = [];
+    ps.collect(active);
+    expect(active.length).toBe(1);
+    expect(active[0]!.team).toBe(p.team);
+  });
+
+  test('扇形外的敌方光波不会被打掉', () => {
+    const p = meleePlayer('wood_stick'); // 朝 +X，扇形很宽但仍覆盖不到正上方
+    const ps = new ProjectileSystem();
+    ps.spawn({ kind: 'orb', team: 'enemy', x: p.x, y: p.y - 40, angle: 0, speed: 0, damage: 5, radius: 8, life: 3 });
+    const ctx = swingCtx(p, [], { projectiles: ps });
+    updateWeapon(ctx, true);
+    updateWeapon(ctx, false);
+    const active: Projectile[] = [];
+    ps.collect(active);
+    expect(active.length).toBe(1);
+  });
+
+  test('挥砍伤害敌人与打掉光波同时发生', () => {
+    noCrit();
+    const p = meleePlayer('wood_stick');
+    const t = makeTarget(40, 0);
+    const ps = new ProjectileSystem();
+    ps.spawn({ kind: 'orb', team: 'enemy', x: p.x + 40, y: p.y, angle: 0, speed: 0, damage: 5, radius: 8, life: 3 });
+    const ctx = swingCtx(p, [t], { projectiles: ps });
+    updateWeapon(ctx, true);
+    updateWeapon(ctx, false);
+    expect(t.hits).toBe(1); // 敌人被打到
+    const active: Projectile[] = [];
+    ps.collect(active);
+    expect(active.length).toBe(0); // 光波被打掉
   });
 });

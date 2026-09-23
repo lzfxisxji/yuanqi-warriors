@@ -2,7 +2,7 @@
  * 弹丸系统：对象池 + 分步连续碰撞检测 + 差异化出膛视觉。
  * 支持直线弹、霰弹弹丸、狙击曳光、榴弹（抛物线高度 + 阴影）、追踪球、尖刺弹、火焰喷射流。
  */
-import { TAU, clamp, normalize } from '../core/math';
+import { TAU, angleDelta, clamp, normalize } from '../core/math';
 import type { Team } from '../core/types';
 import { ROOM_H, ROOM_W } from '../data/config';
 import type { Room } from '../dungeon/room';
@@ -154,6 +154,39 @@ export class ProjectileSystem {
       p.hitIds.clear();
     }
     this.activeCount = 0;
+  }
+
+  /**
+   * 近战打掉敌方光波（需求 30）：清除落在「以 (x,y) 为顶点、瞄准角中线、半角 halfArc、半径 range」扇形内的
+   * 敌方弹丸（team 与 `team` 不同的那些），对每个被清除的弹丸回调 `onHit`（用于火花 / 反馈）。
+   * 返回被清除的数量。玩家自己的弹丸（team 相同）不会被误清。
+   */
+  intercept(opts: {
+    team: Team;
+    x: number;
+    y: number;
+    angle: number;
+    halfArc: number;
+    range: number;
+    onHit: (p: Projectile) => void;
+  }): number {
+    let n = 0;
+    for (const p of this.pool) {
+      if (!p.active) continue;
+      if (p.team === opts.team) continue; // 只打敌方（非己方阵营）弹丸
+      const dx = p.x - opts.x;
+      const dy = p.y - opts.y;
+      const d = Math.hypot(dx, dy);
+      if (d > opts.range + p.radius) continue;
+      const slack = Math.min(0.6, p.radius / Math.max(1, d));
+      if (Math.abs(angleDelta(opts.angle, Math.atan2(dy, dx))) > opts.halfArc + slack) continue;
+      p.active = false;
+      p.hitIds.clear();
+      opts.onHit(p);
+      n++;
+    }
+    this.activeCount = Math.max(0, this.activeCount - n);
+    return n;
   }
 
   /** 收集当前所有活跃弹丸（只读引用，供联机快照序列化使用）。 */
