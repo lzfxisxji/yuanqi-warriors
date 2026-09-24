@@ -18,7 +18,7 @@ import { describe, expect, test } from 'vitest';
 import { Player, createWeaponInstance } from '../src/entities/player';
 import { getCharacter } from '../src/data/characters';
 import { getWeaponDef } from '../src/data/weapons';
-import { ScreenShake } from '../src/systems/effects';
+import { DamageNumbers, ScreenShake } from '../src/systems/effects';
 import type { DamageContext, HitEntity } from '../src/systems/combat';
 import type { ProjectileSystem } from '../src/entities/projectile';
 import type { Room } from '../src/dungeon/room';
@@ -45,11 +45,15 @@ interface BeamHarness {
   shake: ScreenShake;
   counts: { particles: number; sounds: number };
   player: Player;
+  numbers: DamageNumbers;
 }
 
 function makeBeamHarness(weaponId = 'laser'): BeamHarness {
   const shake = new ScreenShake();
   const counts = { particles: 0, sounds: 0 };
+  // 需求 33：用真实的伤害数字容器，而不是 noop 替身 ——
+  // 这样「光束打到目标会弹数字」才能被断言（noop 会把 add 吞掉，永远测不到）。
+  const numbers = new DamageNumbers();
 
   const player = new Player(getCharacter('wolfshade'));
   player.weapons = [createWeaponInstance(weaponId, player.mods)];
@@ -67,7 +71,7 @@ function makeBeamHarness(weaponId = 'laser'): BeamHarness {
     },
     bus: noopBag(),
     shake,
-    numbers: noopBag(),
+    numbers,
     flash: noopBag(),
     time: noopBag(),
     audio: {
@@ -88,7 +92,7 @@ function makeBeamHarness(weaponId = 'laser'): BeamHarness {
     time: 0,
   };
 
-  return { fire, shake, counts, player };
+  return { fire, shake, counts, player, numbers };
 }
 
 /** 按真实顺序跑 `seconds` 秒：每帧先开火，再让震屏衰减。 */
@@ -162,5 +166,40 @@ describe('棱镜激光 · 屏幕震动（需求 32）', () => {
     }
     expect(h.player.beamActive).toBe(false);
     expect(leftover).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------- 伤害数字
+
+describe('棱镜激光 · 伤害数字（需求 33）', () => {
+  test('光束打中目标会弹出伤害数字，且总量≈ beamDps×damageMul×时长', () => {
+    const h = makeBeamHarness();
+    // 放一个真目标在光束路径上（x 在射线方向上即可，命中判定只看距离）
+    const target = {
+      x: 120,
+      y: 0,
+      radius: 20,
+      applyDamage: (amount: number) => ({ applied: amount, killed: false, blocked: false }),
+    } as unknown as HitEntity;
+    h.fire.targets = [target];
+
+    holdBeam(h, 1); // 长按 1 秒
+
+    // 根因回归：之前 DamageContext.numbers 是死字段，从不弹数字
+    expect(h.numbers.list.length).toBeGreaterThan(0);
+    const total = h.numbers.list.reduce((s, n) => s + n.value, 0);
+    // 理论每秒伤害 = beamDps(62) × damageMul（角色加成，约 1.44）；
+    // 合并窗口(0.25s)把一秒压成约 4 跳，数字有 0.78s 寿命（旧数字会淡出），
+    // 加上随机暴击，给一个宽松但仍有约束力的区间。
+    const expectedPerSec = 62 * h.player.mods.damageMul;
+    expect(total).toBeGreaterThan(expectedPerSec * 0.4);
+    expect(total).toBeLessThan(expectedPerSec * 2);
+  });
+
+  test('光束没打到任何目标时，不弹伤害数字', () => {
+    const h = makeBeamHarness();
+    h.fire.targets = []; // 空靶 → 不应产生任何数字
+    holdBeam(h, 1);
+    expect(h.numbers.list.length).toBe(0);
   });
 });

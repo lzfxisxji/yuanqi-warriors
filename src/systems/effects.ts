@@ -50,14 +50,51 @@ export interface DamageNumber {
   crit: boolean;
   color: string;
   scale: number;
+  /** 合并键（一般就是挨打的那个目标）。同键、且仍在窗口内的伤害会累加进同一个数字。 */
+  key?: unknown;
+  /** 合并窗口（秒），从数字出生那一刻起算。 */
+  mergeWindow: number;
 }
 
 export class DamageNumbers {
   list: DamageNumber[] = [];
   enabled = true;
 
-  add(x: number, y: number, value: number, crit: boolean, color = '#ffe9b0'): void {
+  /**
+   * 弹一个伤害数字。
+   *
+   * `key` / `mergeWindow`（需求 33）治的是"高频伤害刷屏"：
+   * 持续光束每帧结算一次、霰弹同一帧命中好几颗 —— 每次都弹一个数字的话，
+   * 屏幕上会糊成一片，反而读不出"这一下打了多少"。传了 `key`（受伤目标）之后，
+   * 同一目标在 `mergeWindow` 秒内的伤害会**累加进同一个数字**，看起来是"一跳一跳"地涨。
+   *
+   * 窗口按**真实秒**算，与帧率无关：219 FPS 下窗口内的帧数更多，
+   * 但数字出现的密度不变（这正是需求 32 那条"反馈按时间归一"的同一条经验）。
+   */
+  add(
+    x: number,
+    y: number,
+    value: number,
+    crit: boolean,
+    color = '#ffe9b0',
+    key?: unknown,
+    mergeWindow = 0.06,
+  ): void {
     if (!this.enabled) return;
+    if (key !== undefined) {
+      // 从新到旧扫：第一个同键的就是最近的那个；连它的窗口都关了，更老的更没戏，直接停。
+      for (let i = this.list.length - 1; i >= 0; i--) {
+        const n = this.list[i]!;
+        if (n.key !== key) continue;
+        if (n.maxLife - n.life > n.mergeWindow) break;
+        n.value += value;
+        if (crit) {
+          n.crit = true;
+          n.scale = 1.42;
+        }
+        return;
+      }
+    }
     if (this.list.length >= MAX_DAMAGE_NUMBERS) this.list.shift();
     this.list.push({
       x: x + (Math.random() - 0.5) * 12,
@@ -70,6 +107,8 @@ export class DamageNumbers {
       crit,
       color,
       scale: crit ? 1.42 : 1,
+      key,
+      mergeWindow,
     });
   }
 

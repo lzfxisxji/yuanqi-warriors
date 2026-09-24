@@ -30,6 +30,15 @@ export interface WeaponFireContext {
 
 const BEAM_AMMO_PER_SECOND = 26;
 
+/**
+ * 持续光束的伤害数字节流（秒，需求 33）。
+ *
+ * 光束每帧都在结算伤害，若每帧弹一个数字，屏幕上会糊成一片。
+ * 同一个目标在这个窗口内的伤害会**合并成一个数字**（见 `DamageNumbers.add`），
+ * 读起来就是"每 0.25 秒涨一跳"。窗口按真实秒算，与帧率无关。
+ */
+const BEAM_NUMBER_INTERVAL = 0.25;
+
 let shellAlternator = 0;
 
 /** 根据当前武器状态执行击发（每帧调用一次）。 */
@@ -211,6 +220,9 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
       color: def.colors.glow,
       ownerTeam: player.team,
     });
+    // 需求 33：伤害真的算进去了，就必须让人**看得见**。
+    // 训练营的木桩血条恒满（`infiniteHp`），没有浮空数字时玩家只会觉得"这武器没伤害"。
+    ctx.numbers.add(t.x, t.y - 26, dmg, crit, def.colors.glow, t, BEAM_NUMBER_INTERVAL);
     if (Math.random() < fire.dt * 9) {
       ctx.particles.hitSparks(t.x, t.y, player.aimAngle, def.colors.glow, 3, 0.6);
     }
@@ -332,7 +344,8 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
     const n = d > 0.001 ? { x: dx / d, y: dy / d } : { x: Math.cos(baseAngle), y: Math.sin(baseAngle) };
     const crit = Math.random() < clamp(def.crit + mods.critAdd, 0, 0.95);
     critical = critical || crit;
-    t.applyDamage(damage * (crit ? 1.6 : 1), {
+    const dealt = damage * (crit ? 1.6 : 1);
+    t.applyDamage(dealt, {
       crit,
       source: 'melee',
       dirX: n.x,
@@ -341,6 +354,9 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
       color: def.colors.glow,
       ownerTeam: player.team,
     });
+    // 需求 33：近战一刀就该看得见一个数字。一次挥砍对同一目标只结算一次，
+    // 所以不用传合并键（不会像光束那样每帧刷）。
+    ctx.numbers.add(t.x, t.y - 26, dealt, crit, def.colors.glow);
     ctx.particles.hitSparks(t.x, t.y, baseAngle, def.colors.glow, crit ? 9 : 5, crit ? 1.15 : 0.85);
     hits++;
   }

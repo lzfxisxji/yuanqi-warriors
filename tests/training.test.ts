@@ -26,6 +26,8 @@ import {
   TRAINING_DUMMY_ID,
   TRAINING_DUMMY_OFFSET_Y,
   TRAINING_SEED,
+  VIEW_H,
+  VIEW_W,
 } from '../src/data/config';
 import { CHARACTERS, getCharacter } from '../src/data/characters';
 import { ENEMIES, TRAINING_ENEMIES, getEnemyDef } from '../src/data/enemies';
@@ -464,6 +466,63 @@ describe('场景 · 训练营房间', () => {
     const enemies = (scene as unknown as Probe).enemies;
     expect(enemies).toHaveLength(1);
     expect(enemies[0]!.def.infiniteHp).toBe(true);
+  });
+});
+
+describe('场景 · 训练营伤害反馈（需求 33）', () => {
+  /** 用棱镜激光长按木桩：每帧把指针摆到木桩屏幕坐标，强制 updateAim 对准。 */
+  const beamDummyFor = (scene: GameplayScene, host: ReturnType<typeof makeTrainingScene>['host']) => {
+    const dummy = scene.trainingDummy!;
+    host.input.pointer.down = true;
+    const cam = host.renderer.camera;
+    for (let i = 0; i < 60; i++) {
+      host.input.pointer.sx = VIEW_W / 2 + (dummy.x - cam.x);
+      host.input.pointer.sy = VIEW_H / 2 + (dummy.y - cam.y);
+      scene.update(1 / 60);
+    }
+    return dummy;
+  };
+
+  test('棱镜激光长按打木桩：既有伤害又有浮空数字', () => {
+    const { host, scene } = makeTrainingScene('wolfshade', 'laser');
+    const dummy = beamDummyFor(scene, host);
+    // 根因回归：光束确实造成伤害（PROBE 实测 1 秒约 89 点）
+    expect(dummy.damageTaken).toBeGreaterThan(0);
+    // 需求 33 核心修复：伤害数字必须真的弹出来，否则训练营"看不见伤害"
+    expect(scene.numbers.list.length).toBeGreaterThan(0);
+  });
+
+  test('顶部横幅实时显示累计伤害与 DPS', () => {
+    const { host, scene } = makeTrainingScene('wolfshade', 'laser');
+    const dummy = beamDummyFor(scene, host);
+    const banner = (scene as unknown as { objectiveBanner(): { text: string; color: string } | null }).objectiveBanner();
+    expect(banner).not.toBeNull();
+    expect(banner!.text).toContain('训练营');
+    expect(banner!.text).toContain('累计伤害');
+    expect(banner!.text).toContain('DPS');
+    // 横幅里的累计伤害应等于木桩实际承受值（四舍五入后）
+    expect(banner!.text).toContain(String(Math.round(dummy.damageTaken)));
+  });
+
+  test('近战打木桩也弹伤害数字', () => {
+    const { host, scene } = makeTrainingScene('niulai', 'wood_stick');
+    const dummy = scene.trainingDummy!;
+    const player = playerOf(scene);
+    const cam = host.renderer.camera;
+    // 近战射程短，把玩家挪到木桩边上（否则够不着 → 0 伤害）
+    const wRange = player.currentWeapon.def.range;
+    player.x = dummy.x - wRange * 0.6;
+    player.y = dummy.y;
+    // 近战是「按住蓄力、松开挥砍」：一直按住只会卡在蓄力阶段，从不下刀。
+    // 所以每 10 帧做一个 按下(蓄力)→松开(挥砍) 的循环。
+    for (let i = 0; i < 120; i++) {
+      host.input.pointer.down = i % 10 < 5;
+      host.input.pointer.sx = VIEW_W / 2 + (dummy.x - cam.x);
+      host.input.pointer.sy = VIEW_H / 2 + (dummy.y - cam.y);
+      scene.update(1 / 60);
+    }
+    expect(dummy.damageTaken).toBeGreaterThan(0);
+    expect(scene.numbers.list.length).toBeGreaterThan(0);
   });
 });
 

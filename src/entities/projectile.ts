@@ -360,6 +360,11 @@ export class ProjectileSystem {
             // 弹丸的 team 就是发射者阵营（自由混战 = 玩家 peerId）→ 人头归属
             ownerTeam: p.team,
           });
+          // 需求 33：命中就要看得见数字。带合并键是给霰弹/火焰喷射这类
+          // "同一帧多颗打同一个目标"的武器兜底，否则一次扣扳机会糊出七八个数字。
+          if (result.applied > 0) {
+            world.ctx.numbers.add(t.x, t.y - 26, result.applied, p.crit, p.glow, t);
+          }
           if (p.burn && !t.dead) world.spawnBurn(t, p.burn.dps, p.burn.duration);
 
           if (p.kind === 'flameJet') p.damage *= 0.85;

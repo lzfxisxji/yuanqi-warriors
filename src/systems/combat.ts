@@ -123,7 +123,8 @@ export function explode(opts: ExplosionOptions): number {
     if (d > reach) continue;
     const falloffMul = falloff ? 0.45 + 0.55 * (1 - Math.min(1, d / reach)) : 1;
     const dir = d > 0.001 ? { x: (t.x - x) / d, y: (t.y - y) / d } : { x: 0, y: 0 };
-    t.applyDamage(damage * falloffMul, {
+    const dealt = damage * falloffMul;
+    t.applyDamage(dealt, {
       crit: false,
       source: 'explosion',
       dirX: dir.x,
@@ -131,6 +132,8 @@ export function explode(opts: ExplosionOptions): number {
       knockback: knockback * falloffMul,
       color: coreColor,
     });
+    // 需求 33：范围伤害同样要看得见。带合并键 → 同一帧的连环爆炸会并成一个数字。
+    ctx.numbers.add(t.x, t.y - 26, dealt, false, coreColor, t);
     hits++;
   }
 

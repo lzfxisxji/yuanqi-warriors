@@ -221,6 +221,13 @@ export class GameplayScene {
    */
   private readonly dashHits = new Map<Player, Set<HitEntity>>();
 
+  /** 训练营实时读数（需求 33）：木桩没有血条，玩家需要一个"看得见伤害"的数字。
+   *  - `trainingDamage`：木桩累计承受的总伤害（monotonic，直接读 dummy.damageTaken）
+   *  - `trainingTime`：训练有效时长（秒，真实时间；暂停/覆盖层不计）—— 用来算全程 DPS
+   *  两者都随场景创建归零，训练营每次进入都是一把新的。 */
+  private trainingDamage = 0;
+  private trainingTime = 0;
+
   // ------------------------------------------------------------- 联机状态
   /** 联网客户端（单人模式为 null，所有联机分支都不会触发）。 */
   private net: NetClient | null = null;
@@ -851,6 +858,14 @@ export class GameplayScene {
     this.particles.update(dt);
     this.numbers.update(dt);
     this.updateDynamicLights();
+
+    // 需求 33：训练营木桩没有血条，把累计伤害/DPS 实时喂给顶部横幅，
+    // 让"打没打到伤害"一眼可见（否则玩家只看到恒满的木桩血条，以为没伤害）。
+    if (this.training) {
+      const dummy = this.trainingDummy;
+      if (dummy) this.trainingDamage = dummy.damageTaken;
+      this.trainingTime += dtRaw;
+    }
 
     this.host.renderer.followPlayer(player.x, player.y, player.aimAngle, this.room, dtRaw);
     this.host.audio.updateMusic(dtRaw);
@@ -2506,7 +2521,12 @@ export class GameplayScene {
     // 训练营（需求 29）：这里没有"下一步该干嘛"，顶部只说明这是个练习场。
     // 必须压过下面的"消灭所有敌人"—— 木桩是打不死的，那句话会把玩家逼疯。
     if (this.training) {
-      return { text: '训练营 · 无限生命木桩 · 按 Esc 可随时返回大厅', color: 'rgba(255,212,121,0.9)' };
+      const dps = this.trainingTime > 0 ? this.trainingDamage / this.trainingTime : 0;
+      const dmg = Math.round(this.trainingDamage);
+      return {
+        text: `训练营 · 累计伤害 ${dmg} · DPS ${dps.toFixed(0)} · 按 Esc 返回大厅`,
+        color: 'rgba(255,212,121,0.9)',
+      };
     }
     // 自由混战：比赛状态压过"消灭所有敌人"——PK 里没人关心清怪进度，
     // 玩家要一眼看到的是"几点开打 / 打到什么程度算赢"。
