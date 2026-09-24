@@ -203,3 +203,41 @@ describe('棱镜激光 · 伤害数字（需求 33）', () => {
     expect(h.numbers.list.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------- 破坏木箱
+
+describe('棱镜激光 · 破坏木箱（需求 34）', () => {
+  test('光束撞到木箱（静态遮挡）时会沿命中点造成圆形环境伤害', () => {
+    const h = makeBeamHarness();
+    // 让 raycastStatic 在 (200,0) 处"撞到木箱"停下（木箱是静态遮挡，光束本就会停在这里）
+    h.fire.room.raycastStatic = () => ({ x: 200, y: 0 });
+
+    const calls: Array<{ x: number; y: number; r: number; d: number }> = [];
+    h.fire.damageEnvironment = (x, y, r, d) => {
+      calls.push({ x, y, r, d });
+    };
+
+    holdBeam(h, 0.3); // 0.3s：beamDps×mods ≈ 89/s，远超木箱 CRATE_HP=10
+
+    // 根因回归：此前光束从不调用 damageEnvironment，木箱对它免疫
+    expect(calls.length).toBeGreaterThan(0);
+    const first = calls[0];
+    // 命中点就是 raycast 返回的那一格，半径按 TILE(48) 量级给
+    expect(first.x).toBe(200);
+    expect(first.y).toBe(0);
+    expect(first.r).toBeGreaterThan(20);
+    // 每帧伤害 = dps×dt，须为正
+    expect(first.d).toBeGreaterThan(0);
+  });
+
+  test('光束前方没有遮挡（raycast 落空）时不调用环境伤害', () => {
+    const h = makeBeamHarness();
+    h.fire.room.raycastStatic = () => null; // 一路射到射程末端，没撞到任何东西
+    let calls = 0;
+    h.fire.damageEnvironment = () => {
+      calls += 1;
+    };
+    holdBeam(h, 0.5);
+    expect(calls).toBe(0);
+  });
+});

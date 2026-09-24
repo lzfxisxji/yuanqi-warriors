@@ -3,7 +3,7 @@
  * 并处理后坐、枪口火焰、抛壳、屏幕震动与音效，保证每种武器的反馈都不同。
  */
 import { TAU, angleDelta, clamp, distPointToSegment, normalize } from '../core/math';
-import { MELEE_CHARGE_MAX_MUL, MELEE_CHARGE_MIN_HOLD, MELEE_CHARGE_TIME } from '../data/config';
+import { MELEE_CHARGE_MAX_MUL, MELEE_CHARGE_MIN_HOLD, MELEE_CHARGE_TIME, TILE } from '../data/config';
 import type { Player } from '../entities/player';
 import type { ProjectileSystem } from '../entities/projectile';
 import type { Boss } from '../entities/boss';
@@ -24,6 +24,11 @@ export interface WeaponFireContext {
    * 参数：玩家坐标、瞄准角、扇形半角(rad)、判定半径(px)、单次伤害。
    */
   damageObstacles?: (x: number, y: number, angle: number, halfArc: number, range: number, damage: number) => void;
+  /**
+   * 圆形环境伤害（爆炸同款）：用于持续光束之类的"线状/点状"武器破坏木箱。
+   * 参数：圆心、半径(px)、单次伤害。木箱不是实体，只能靠这个入口破坏。
+   */
+  damageEnvironment?: (x: number, y: number, radius: number, damage: number) => void;
   dt: number;
   time: number;
 }
@@ -226,6 +231,15 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
     if (Math.random() < fire.dt * 9) {
       ctx.particles.hitSparks(t.x, t.y, player.aimAngle, def.colors.glow, 3, 0.6);
     }
+  }
+
+  // 需求 34：持续光束也能破坏木箱。
+  // `raycastStatic` 在撞到第一块静态遮挡时就停下，而木箱本身也是遮挡（isBlockingTile 含 Crate），
+  // 所以命中点 (bx,by) 一定落在木箱边缘。沿此处给一个圆形环境伤害即可破箱——
+  // 木箱是瓦片不是实体，只有 `damageEnvironment` / `damageObstacles` 这两个入口能破坏它。
+  // 仅在「光束真的撞到遮挡」(hit 非 null) 时才触发：开阔地(命中落空)端点只是空地，无需扫箱。
+  if (fire.damageEnvironment && hit) {
+    fire.damageEnvironment(bx, by, TILE * 0.8, dps * fire.dt);
   }
 
   // 光束自身的视觉与反馈

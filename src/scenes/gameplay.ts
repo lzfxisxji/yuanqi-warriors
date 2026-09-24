@@ -816,6 +816,7 @@ export class GameplayScene {
         projectiles: this.projectiles,
         targets: this.allTargets(),
         damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od),
+        damageEnvironment: (ex, ey, er, ed) => this.damageEnvironment(ex, ey, er, ed),
         dt,
         time: this.run.timeSec,
       },
@@ -2742,7 +2743,7 @@ export class GameplayScene {
     if (p.dead) {
       p.updateMovement(dt, { x: 0, y: 0 }, this.room);
       updateWeapon(
-        { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od), dt, time: this.run.timeSec },
+        { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles,         targets: this.allTargets(), damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od), damageEnvironment: (ex, ey, er, ed) => this.damageEnvironment(ex, ey, er, ed), dt, time: this.run.timeSec },
         false,
       );
       return;
@@ -2760,7 +2761,7 @@ export class GameplayScene {
       if (input.swap === 0 || input.swap === 1) p.swapWeapon(input.swap);
     }
     updateWeapon(
-      { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od), dt, time: this.run.timeSec },
+      { player: p, room: this.room, ctx: this.damageCtx, projectiles: this.projectiles, targets: this.allTargets(), damageObstacles: (ox, oy, oa, oh, org, od) => this.damageObstacles(ox, oy, oa, oh, org, od), damageEnvironment: (ex, ey, er, ed) => this.damageEnvironment(ex, ey, er, ed), dt, time: this.run.timeSec },
       !!input?.fire,
     );
   }
