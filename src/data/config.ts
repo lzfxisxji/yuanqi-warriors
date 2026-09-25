@@ -43,6 +43,9 @@ export function isBlockingTile(t: number): boolean {
 /** 可破坏瓦片血量（目前仅木箱）。 */
 export const CRATE_HP = 10;
 
+/** 破坏木箱掉落武器的概率（需求 36，仅闯关/联机模式；训练营不掉落）。 */
+export const CRATE_WEAPON_DROP_CHANCE = 0.1;
+
 /** 玩家基础参数。 */
 export const PLAYER_RADIUS = 15;
 /**

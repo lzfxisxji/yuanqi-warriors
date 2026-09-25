@@ -15,6 +15,7 @@ import {
   BOSS_DEATH_SLOWMO,
   DASH_HIT_PAD,
   DOOR_LOCK_DELAY,
+  CRATE_WEAPON_DROP_CHANCE,
   FLOOR_COUNT,
   MAX_PLAYERS,
   MELEE_CHARGE_TIME,
@@ -33,7 +34,7 @@ import {
   VIEW_W,
 } from '../data/config';
 import { getCharacter, type CharacterPalette } from '../data/characters';
-import { getWeaponDef, rollWeaponId, WEAPONS } from '../data/weapons';
+import { getWeaponDef, rollCrateWeapon, rollWeaponId, WEAPONS } from '../data/weapons';
 import { UPGRADES, getUpgrade } from '../data/upgrades';
 import { buildCombatWaves, buildEliteWaves, SHOP_PRICES, type Wave } from '../data/encounters';
 import { EVENTS, type EventEffect, type EventOption } from '../data/events';
@@ -1787,6 +1788,19 @@ export class GameplayScene {
     if (this.run.rng.chance(0.45)) {
       const gold = this.run.addGold(this.run.rng.int(3, 8));
       if (gold > 0) scatterGold(this.pickups, this.run.rng, cx, cy, gold);
+    }
+    // 需求 36：闯关 / 联机模式破坏木箱有 10% 概率掉落武器（训练营不掉落）。
+    // 复用宝箱同款抽取口径（排除已持有，按 tier 加权），掉落的武器拾取物需在脚边按 E 拾取。
+    const crateWeaponId = rollCrateWeapon(
+      this.run.rng,
+      this.run.player.weapons.map((w) => w.def.id),
+      this.training,
+      CRATE_WEAPON_DROP_CHANCE,
+    );
+    if (crateWeaponId) {
+      this.pickups.push(
+        new Pickup('weapon', clamp(cx, 60, ROOM_W - 60), clamp(cy, 60, ROOM_H - 60), { weaponId: crateWeaponId }),
+      );
     }
     return true;
   }

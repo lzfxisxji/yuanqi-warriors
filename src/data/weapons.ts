@@ -9,6 +9,8 @@
  * 因此 `bulletSpeed` / `spread` / `mag` / `reloadTime` 这些远程字段对它们不生效。
  */
 
+import { RNG } from '../core/math';
+
 export type WeaponKind = 'bullet' | 'beam' | 'flame' | 'grenade' | 'melee';
 export type ProjectileShape = 'bolt' | 'pellet' | 'shell' | 'orb' | 'flameJet' | 'grenade' | 'blade';
 export type WeaponSound = 'pistol' | 'rifle' | 'shotgun' | 'sniper' | 'smg' | 'laser' | 'flame' | 'launcher' | 'melee';
@@ -493,6 +495,26 @@ export function rollWeaponId(rngPick: (weights: number[]) => number, exclude: re
   const list = pool.length ? pool : WEAPONS;
   const weights = list.map((w) => (w.tier === 1 ? 10 : w.tier === 2 ? 6 : 2.5));
   return list[rngPick(weights)]!.id;
+}
+
+/**
+ * 破坏木箱时按概率掉落一把武器（需求 36）。
+ *
+ * - 训练营（`training=true`）不掉落武器 —— 木桩旁边不该凭空刷武器。
+ * - 闯关 / 联机模式按 `chance` 概率掉落；命中则从全武器池（排除玩家已持有）按 tier 加权抽取。
+ * - 返回武器 id；不掉落返回 null。
+ *
+ * 复用 `rollWeaponId` 的抽取逻辑，保证与宝箱 / Boss 掉落同一套权重口径。
+ */
+export function rollCrateWeapon(
+  rng: RNG,
+  ownedIds: readonly string[],
+  training: boolean,
+  chance: number = 0.1,
+): string | null {
+  if (training) return null;
+  if (!rng.chance(chance)) return null;
+  return rollWeaponId((w) => rng.weightedIndex(w), ownedIds);
 }
 
 /**
