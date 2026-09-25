@@ -33,7 +33,7 @@ import { WEAPONS } from '../src/data/weapons';
 import { CHARACTERS } from '../src/data/characters';
 import { BOSSES } from '../src/data/bosses';
 import { hitTest } from '../src/ui/widgets';
-import type { GameProgress, GameSettings } from '../src/systems/save';
+import type { GameProgress, GameSettings, Wallet, CheckInState } from '../src/systems/save';
 
 // ------------------------------------------------------------------ 脚手架
 
@@ -110,7 +110,15 @@ const SETTINGS: GameSettings = {
 };
 
 function menuData(saves: SaveSlotInfo[] = []): MenuData {
-  return { progress: PROGRESS, settings: SETTINGS, discoveredWeapons: [], unlockedCharacters: [], saves };
+  return {
+    progress: PROGRESS,
+    settings: SETTINGS,
+    discoveredWeapons: [],
+    unlockedCharacters: [],
+    saves,
+    wallet: { diamonds: 0, coins: 0 } as Wallet,
+    checkIn: { lastDate: '', streak: 0 } as CheckInState,
+  };
 }
 
 /** 造一条存档列表项（需求 20）。 */
@@ -266,13 +274,20 @@ describe('主菜单右侧面板', () => {
     expect(joined).not.toContain('合作闯关');
   });
 
-  test('主菜单按钮全部落在左侧按钮列，不侵入右侧面板', () => {
+  test('主菜单按钮不侵入右侧房间面板', () => {
     const idle = buildMenuButtons(createMenuState());
     const state = createMenuState();
     toRoom(state);
     const inRoom = buildMenuButtons(state);
+    // 房间面板实际只占据 y:108~394；「每日签到」CTA 有意放在面板下方（y=410）的空白区，
+    // 不侵入面板本体。用矩形重叠判定，既拦住真正压到面板的按钮，又允许下方的签到入口。
+    const overlapsPanel = (b: { x: number; y: number; w: number; h: number }) =>
+      b.x < PANEL.x + PANEL.w &&
+      b.x + b.w > PANEL.x &&
+      b.y < PANEL.y + PANEL.h &&
+      b.y + b.h > PANEL.y;
     for (const b of [...idle, ...inRoom]) {
-      expect(b.x + b.w).toBeLessThanOrEqual(PANEL.x);
+      expect(overlapsPanel(b)).toBe(false);
     }
     // 房间内「联机模式」按钮改叫「返回房间」，点了只是回大厅（不掉线）
     const multi = inRoom.find((b) => b.id === 'multi');

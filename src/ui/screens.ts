@@ -1,11 +1,11 @@
 /** 大厅界面：主菜单、角色选择、图鉴（武器 / 敌人）、设置入口。 */
 import { TAU, clamp } from '../core/math';
-import { MAX_PLAYERS, PK_MIN_PLAYERS, ROOM_CODE_LEN } from '../data/config';
+import { MAX_PLAYERS, PK_MIN_PLAYERS, ROOM_CODE_LEN, DAILY_CHECKIN, CHECKIN_CYCLE } from '../data/config';
 import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../data/characters';
 import { WEAPONS, getWeaponDef, type WeaponDef } from '../data/weapons';
 import { ENEMIES, getEnemyDef, type EnemyDef } from '../data/enemies';
 import { BOSSES, BOSS_ATTACK_LABELS, bossContactDamage, bossMaxHp, type BossDef } from '../data/bosses';
-import type { GameProgress, GameSettings } from '../systems/save';
+import type { GameProgress, GameSettings, Wallet, CheckInState } from '../systems/save';
 import {
   UI_COLORS,
   drawButton,
@@ -152,6 +152,8 @@ export interface MenuState {
    */
   trainingChar: number;
   trainingWeapon: number;
+  /** 需求 35：签到场面板是否打开。是 overlay，不切换 mode（背景仍是主菜单）。 */
+  checkinOpen: boolean;
 }
 
 export function createMenuState(): MenuState {
@@ -166,6 +168,7 @@ export function createMenuState(): MenuState {
     lobby: createLobbyInfo(),
     trainingChar: 0,
     trainingWeapon: 0,
+    checkinOpen: false,
   };
 }
 
@@ -176,6 +179,10 @@ export interface MenuData {
   unlockedCharacters: string[];
   /** 已存在的远征存档（按落盘时间由新到旧）。存档管理页按角色查它，主菜单取 [0]。 */
   saves: SaveSlotInfo[];
+  /** 全局钱包余额（需求 35），主菜单常驻显示 + 签到面板内展示。 */
+  wallet: Wallet;
+  /** 每日签到状态（需求 35），签到面板据此渲染格子。 */
+  checkIn: CheckInState;
 }
 
 /** 存档列表需要的最少信息（UI 层不直接依赖存档结构）。 */
@@ -320,6 +327,17 @@ export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[
         w,
         h: 38,
         style: 'ghost',
+        enabled: !locked,
+      });
+      // 需求 35：每日签到入口。放在右侧房间面板下方的大按钮（与左侧按钮列错开，不挤占底部按键提示）。
+      buttons.push({
+        id: 'checkin',
+        label: '每日签到 · 领钻石金币',
+        x: 640,
+        y: 410,
+        w: 560,
+        h: 54,
+        style: 'accent',
         enabled: !locked,
       });
       break;
@@ -594,7 +612,7 @@ export function drawMenu(
   drawBackground(ctx, time);
   switch (state.mode) {
     case 'main':
-      drawMain(ctx, state, buttons, hoverId, time);
+      drawMain(ctx, state, buttons, hoverId, time, data);
       break;
     case 'charselect':
       drawCharSelect(ctx, state, buttons, hoverId, time, data);
@@ -620,6 +638,185 @@ export function drawMenu(
   if (state.lobby.code && state.mode !== 'multi') {
     drawRoomBadge(ctx, state.lobby.code);
   }
+}
+
+// ------------------------------------------------------------- 每日签到面板（需求 35）
+
+/** 面板底部的动作按钮。注意：这些按钮**不进** `buildMenuButtons`，由主菜单 overlay 模式单独绘制与命中。 */
+export function buildCheckInButtons(info: { day: number; canClaim: boolean }): UiButton[] {
+  const buttons: UiButton[] = [];
+  const y = 529;
+  if (info.canClaim) {
+    buttons.push({ id: 'checkin-claim', label: `签到领取 · 第 ${info.day} 天`, x: 380, y, w: 300, h: 52, style: 'accent' });
+  } else {
+    buttons.push({ id: 'checkin-claim', label: '今日已签到', x: 380, y, w: 300, h: 52, style: 'ghost', enabled: false });
+  }
+  buttons.push({ id: 'checkin-close', label: '关闭', x: 700, y, w: 200, h: 52, style: 'ghost' });
+  return buttons;
+}
+
+/** 签到面板：遮罩 + 居中卡片 + 7 天奖励格 + 钱包余额。按钮由调用方单独绘制（见 buildCheckInButtons）。 */
+export function drawCheckInPanel(
+  ctx: CanvasRenderingContext2D,
+  info: { streak: number; day: number; canClaim: boolean },
+  wallet: Wallet,
+  hoverId: string | null,
+  time: number,
+): void {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,5,12,0.66)';
+  ctx.fillRect(0, 0, 1280, 720);
+  ctx.restore();
+
+  const PANEL_X = 340;
+  const PANEL_Y = 125;
+  const PANEL_W = 600;
+  const PANEL_H = 470;
+  drawPanel(ctx, PANEL_X, PANEL_Y, PANEL_W, PANEL_H, { radius: 18 });
+
+  // 标题 + 副标题
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '900 30px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = UI_COLORS.gold;
+  ctx.fillText('每日签到', PANEL_X + PANEL_W / 2, PANEL_Y + 36);
+  ctx.font = '600 14px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = UI_COLORS.textDim;
+  const sub = info.canClaim
+    ? `连续签到 ${info.streak} 天 · 今日可领第 ${info.day} 天奖励`
+    : `今日已签到 · 当前连续 ${info.streak} 天`;
+  ctx.fillText(sub, PANEL_X + PANEL_W / 2, PANEL_Y + 70);
+  ctx.restore();
+
+  // 7 天格子
+  const cellW = 72;
+  const gap = 8;
+  const totalW = CHECKIN_CYCLE * cellW + (CHECKIN_CYCLE - 1) * gap;
+  const startX = PANEL_X + (PANEL_W - totalW) / 2;
+  const cellY = PANEL_Y + 118;
+  const cellH = 150;
+  const claimedToday = !info.canClaim;
+  for (let i = 1; i <= CHECKIN_CYCLE; i++) {
+    const reward = DAILY_CHECKIN[i - 1]!;
+    const isToday = i === (claimedToday ? info.streak : info.day);
+    const isDone = claimedToday ? i <= info.streak : i < info.day;
+    const state: 'done' | 'today' | 'future' = isDone ? 'done' : isToday ? 'today' : 'future';
+    drawCheckInCell(ctx, reward, startX + (i - 1) * (cellW + gap), cellY, cellW, cellH, state, time);
+  }
+
+  // 钱包余额
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  const balX = PANEL_X + PANEL_W / 2;
+  const balY = PANEL_Y + PANEL_H - 92;
+  drawCurrencyIcon(ctx, 'diamond', balX - 72, balY, '#7ef2c0');
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#7ef2c0';
+  ctx.font = '800 16px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillText(String(wallet.diamonds), balX - 58, balY);
+  drawCurrencyIcon(ctx, 'coin', balX + 26, balY, '#ffd479');
+  ctx.textAlign = 'left';
+  ctx.fillStyle = UI_COLORS.gold;
+  ctx.fillText(String(wallet.coins), balX + 40, balY);
+  ctx.restore();
+}
+
+function drawCheckInCell(
+  ctx: CanvasRenderingContext2D,
+  reward: (typeof DAILY_CHECKIN)[number],
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  state: 'done' | 'today' | 'future',
+  time: number,
+): void {
+  const bg =
+    state === 'today' ? 'rgba(64,52,92,0.98)' : state === 'done' ? 'rgba(28,42,36,0.92)' : 'rgba(20,18,34,0.82)';
+  ctx.save();
+  ctx.fillStyle = bg;
+  roundRect(ctx, x, y, w, h, 12);
+  ctx.fill();
+  if (state === 'today') {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.1 + Math.sin(time * 3) * 0.04;
+    ctx.fillStyle = '#ffd479';
+    roundRect(ctx, x, y, w, h, 12);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.strokeStyle =
+    state === 'today' ? UI_COLORS.gold : state === 'done' ? 'rgba(126,242,192,0.4)' : 'rgba(140,132,170,0.26)';
+  ctx.lineWidth = state === 'today' ? 2.6 : 1.4;
+  roundRect(ctx, x, y, w, h, 12);
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = '600 12px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillText(`第 ${reward.day} 天`, x + w / 2, y + 18);
+
+  let ry = y + 54;
+  const cx = x + w / 2;
+  if (reward.diamonds > 0) {
+    drawCurrencyIcon(ctx, 'diamond', cx - 16, ry, '#7ef2c0');
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#7ef2c0';
+    ctx.font = '800 15px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(String(reward.diamonds), cx + 1, ry);
+    ry += 40;
+  }
+  if (reward.coins > 0) {
+    drawCurrencyIcon(ctx, 'coin', cx - 16, ry, '#ffd479');
+    ctx.textAlign = 'left';
+    ctx.fillStyle = UI_COLORS.gold;
+    ctx.font = '800 15px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(String(reward.coins), cx + 1, ry);
+    ry += 40;
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = '700 13px "PingFang SC","Segoe UI",sans-serif';
+  if (state === 'done') {
+    ctx.fillStyle = 'rgba(126,242,192,0.9)';
+    ctx.fillText('已领 ✓', cx, y + h - 16);
+  } else if (state === 'today') {
+    ctx.fillStyle = UI_COLORS.gold;
+    ctx.fillText('今日', cx, y + h - 16);
+  } else {
+    ctx.fillStyle = 'rgba(150,142,182,0.6)';
+    ctx.fillText('待领', cx, y + h - 16);
+  }
+  ctx.restore();
+}
+
+function drawCurrencyIcon(
+  ctx: CanvasRenderingContext2D,
+  kind: 'coin' | 'diamond',
+  cx: number,
+  cy: number,
+  color: string,
+): void {
+  ctx.save();
+  ctx.fillStyle = color;
+  if (kind === 'diamond') {
+    const r = 9;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + r * 0.78, cy);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - r * 0.78, cy);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(cx, cy, 9, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, time: number): void {
@@ -707,6 +904,7 @@ function drawMain(
   buttons: readonly UiButton[],
   hoverId: string | null,
   time: number,
+  data: MenuData,
 ): void {
   // 标题
   ctx.save();
@@ -738,6 +936,9 @@ function drawMain(
   ctx.restore();
   drawDivider(ctx, 92, 344, 420);
 
+  // 需求 35：右上角常驻钱包（钻石 + 金币），签到获得后实时可见。
+  drawWalletChip(ctx, data.wallet, 1200, 70);
+
   for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
 
   // 右侧：当前房间（房间号 + 模式 + 成员；未建房时给引导）
@@ -751,6 +952,51 @@ function drawMain(
   drawKeyHint(ctx, '1 / 2', '切换武器', 200, 664);
   drawKeyHint(ctx, 'R', '换弹', 330, 664);
   drawKeyHint(ctx, 'Esc', '暂停', 424, 664);
+}
+
+/** 主菜单右上角常驻钱包：钻石（青色菱形）/ 金币（金色圆）+ 数字，右对齐。 */
+function drawWalletChip(ctx: CanvasRenderingContext2D, wallet: Wallet, rightX: number, y: number): void {
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  ctx.font = '800 18px "PingFang SC","Segoe UI",sans-serif';
+  // 右→左：先金币，再钻石，两个货币单元
+  let cursor = rightX;
+  // 金币数字
+  ctx.textAlign = 'right';
+  ctx.fillStyle = UI_COLORS.gold;
+  ctx.fillText(String(wallet.coins), cursor, y);
+  const coinW = ctx.measureText(String(wallet.coins)).width;
+  cursor -= coinW + 8;
+  // 金币图标（金圆）
+  ctx.beginPath();
+  ctx.fillStyle = '#ffd479';
+  ctx.arc(cursor - 9, y, 9, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,80,20,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  cursor -= 26;
+  // 钻石数字
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#7ef2c0';
+  ctx.fillText(String(wallet.diamonds), cursor, y);
+  const diaW = ctx.measureText(String(wallet.diamonds)).width;
+  cursor -= diaW + 8;
+  // 钻石图标（青色菱形）
+  const dx = cursor - 9;
+  const r = 10;
+  ctx.beginPath();
+  ctx.fillStyle = '#7ef2c0';
+  ctx.moveTo(dx, y - r);
+  ctx.lineTo(dx + r * 0.78, y);
+  ctx.lineTo(dx, y + r);
+  ctx.lineTo(dx - r * 0.78, y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(20,120,90,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** 右上角房间号徽标（主菜单之外的其他页面用，避免离开主菜单后丢失房间号）。 */

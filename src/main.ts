@@ -21,17 +21,19 @@ import { NetClient } from './net/NetClient';
 import type { NetMode, PeerInfo } from './net/protocol';
 import {
   CODEX_PAGE_SIZE,
+  buildCheckInButtons,
   buildMenuButtons,
   codexListLength,
   createLobbyInfo,
   createMenuState,
+  drawCheckInPanel,
   drawMenu,
   type CodexTab,
   type MenuData,
   type MenuState,
   type SaveSlotInfo,
 } from './ui/screens';
-import { UI_COLORS, hitTest, type UiButton } from './ui/widgets';
+import { UI_COLORS, drawButton, hitTest, type UiButton } from './ui/widgets';
 import { clearRoomStore, persistRoom, restoreRoom } from './net/roomStore';
 
 type Scene = 'menu' | 'game';
@@ -193,6 +195,8 @@ class App implements GameHost {
       discoveredWeapons: this.save.data.discoveredWeapons,
       unlockedCharacters: this.save.data.unlockedCharacters,
       saves: this.saveSlots(),
+      wallet: this.save.data.wallet,
+      checkIn: this.save.data.checkIn,
     };
   }
 
@@ -211,6 +215,30 @@ class App implements GameHost {
   }
 
   private updateMenu(_dt: number): void {
+    // 需求 35：签到面板是 overlay，打开时完全接管菜单输入（只响应面板按钮 + Esc 关闭）
+    if (this.menuState.checkinOpen) {
+      const info = this.save.getCheckIn();
+      const btns = buildCheckInButtons(info);
+      const p = this.input.pointer;
+      const hovered = hitTest(btns, p.sx, p.sy);
+      this.hoverId = hovered ? hovered.id : null;
+      if (this.input.wasPressed('Escape')) {
+        this.menuState.checkinOpen = false;
+        return;
+      }
+      if (p.justDown && hovered && hovered.enabled !== false) {
+        this.audio.init();
+        this.audio.play('click', 0.6);
+        if (hovered.id === 'checkin-claim') {
+          const r = this.save.claimDailyCheckIn();
+          if (r) this.audio.play('upgrade', 0.6); // 领取成功给个正向音效
+        } else if (hovered.id === 'checkin-close') {
+          this.menuState.checkinOpen = false;
+        }
+      }
+      return;
+    }
+
     const lb = this.menuState.lobby;
     if (this.menuState.mode === 'multi' && lb.joining) this.handleLobbyKeyInput();
     this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
@@ -377,6 +405,9 @@ class App implements GameHost {
         st.previous = 'main';
         st.mode = 'settings';
         break;
+      case 'checkin':
+        st.checkinOpen = true;
+        break;
       case 'menu-back':
         st.confirm = null;
         st.mode = st.previous === 'main' || st.previous === st.mode ? 'main' : st.previous;
@@ -434,6 +465,13 @@ class App implements GameHost {
     const ctx = this.renderer.ctx;
     this.renderer.beginFrame();
     drawMenu(ctx, this.menuState, this.menuButtons, this.hoverId, this.time, this.menuData());
+
+    // 需求 35：签到面板 overlay（在主菜单之上绘制 + 单独画按钮）
+    if (this.menuState.checkinOpen) {
+      const info = this.save.getCheckIn();
+      drawCheckInPanel(ctx, info, this.save.data.wallet, this.hoverId, this.time);
+      for (const b of buildCheckInButtons(info)) drawButton(ctx, b, this.hoverId === b.id, false, this.time);
+    }
 
     // 底部版本水印
     ctx.save();

@@ -280,3 +280,69 @@ describe('存档：每角色一份（需求 20）', () => {
     expect(parseSave({ runs: null }).runs).toEqual({});
   });
 });
+
+describe('存档：每日签到（需求 35）', () => {
+  test('首次签到发放第 1 天奖励，且当日不可重复领取', () => {
+    const save = new SaveManager(createMemoryStorage());
+    const r = save.claimDailyCheckIn(new Date(2026, 8, 25));
+    expect(r).toEqual({ day: 1, coins: 200, diamonds: 0 });
+    expect(save.data.wallet).toEqual({ diamonds: 0, coins: 200 });
+    expect(save.data.checkIn.streak).toBe(1);
+    // 同日再签 → null（不可重复）
+    expect(save.claimDailyCheckIn(new Date(2026, 8, 25))).toBeNull();
+    expect(save.getCheckIn(new Date(2026, 8, 25)).canClaim).toBe(false);
+  });
+
+  test('连续 7 天按表递增，第 8 天回到第 1 天循环', () => {
+    const save = new SaveManager(createMemoryStorage());
+    let d = new Date(2026, 8, 25);
+    const rewards: Array<{ coins: number; diamonds: number }> = [
+      { coins: 200, diamonds: 0 },
+      { coins: 300, diamonds: 0 },
+      { coins: 0, diamonds: 10 },
+      { coins: 400, diamonds: 0 },
+      { coins: 500, diamonds: 0 },
+      { coins: 0, diamonds: 15 },
+      { coins: 800, diamonds: 30 },
+    ];
+    for (let i = 0; i < 7; i++) {
+      const r = save.claimDailyCheckIn(d);
+      expect(r).toEqual({ day: i + 1, ...rewards[i] });
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    }
+    // 7 天累计：金币 200+300+400+500+800=2200，钻石 10+15+30=55
+    expect(save.data.wallet).toEqual({ diamonds: 55, coins: 2200 });
+    expect(save.data.checkIn.streak).toBe(7);
+    // 第 8 天（连续）→ 循环回第 1 天
+    const r8 = save.claimDailyCheckIn(d);
+    expect(r8).toEqual({ day: 1, coins: 200, diamonds: 0 });
+    expect(save.data.checkIn.streak).toBe(1);
+  });
+
+  test('断签（间隔 > 1 天）重置为第 1 天', () => {
+    const save = new SaveManager(createMemoryStorage());
+    save.claimDailyCheckIn(new Date(2026, 8, 25)); // day1
+    save.claimDailyCheckIn(new Date(2026, 8, 26)); // day2, streak=2
+    expect(save.data.checkIn.streak).toBe(2);
+    // 跳到 8/29（与上次 8/26 间隔 3 天）→ 断签，回到 day1
+    const r = save.claimDailyCheckIn(new Date(2026, 8, 29));
+    expect(r).toEqual({ day: 1, coins: 200, diamonds: 0 });
+    expect(save.data.checkIn.streak).toBe(1);
+  });
+
+  test('签到结果持久化，重载后保留', () => {
+    const storage = createMemoryStorage();
+    const save = new SaveManager(storage);
+    save.claimDailyCheckIn(new Date(2026, 8, 25));
+    const reloaded = new SaveManager(storage);
+    expect(reloaded.data.wallet).toEqual({ diamonds: 0, coins: 200 });
+    expect(reloaded.data.checkIn.streak).toBe(1);
+    expect(reloaded.data.checkIn.lastDate).toBe('2026-09-25');
+  });
+
+  test('旧存档缺钱包 / 签到字段时回落默认（不崩溃）', () => {
+    const parsed = parseSave({ progress: { wins: 3 } });
+    expect(parsed.wallet).toEqual({ diamonds: 0, coins: 0 });
+    expect(parsed.checkIn).toEqual({ lastDate: '', streak: 0 });
+  });
+});

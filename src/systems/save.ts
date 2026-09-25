@@ -3,6 +3,7 @@
  * 存储层做了抽象，便于在 Node 环境下用内存实现做单元测试。
  */
 import type { UpgradeStack } from '../data/upgrades';
+import { CHECKIN_CYCLE, DAILY_CHECKIN } from '../data/config';
 import {
   SAVED_RUN_VERSION,
   type RunState,
@@ -42,12 +43,42 @@ export interface GameProgress {
   bestScore: number;
 }
 
+/**
+ * 全局钱包：跨局、跨会话持久化的货币。
+ *
+ * 需求 35 新增。注意它与「局内金币」（`SavedRun.gold`，每局重新计算、随远征结束清零）是**两个独立概念**：
+ * 这里的是玩家账户里长期累积的余额，目前由「每日签到」发放，UI 在主菜单常驻显示。
+ */
+export interface Wallet {
+  /** 钻石：稀有货币，签到第 3/6/7 天发放。 */
+  diamonds: number;
+  /** 金币：常见货币，签到多数天数发放。 */
+  coins: number;
+}
+
+/**
+ * 每日签到状态（需求 35）。
+ *
+ * - `lastDate`：最近一次成功签到的本地日期，格式 `YYYY-MM-DD`（见 `localDateKey`）。
+ *   与今天相同即视为「今日已签到」，不可重复领取。
+ * - `streak`：当前连续签到**已经签到的第几天**（1..CHECKIN_CYCLE）。下一次签到会据此推算下一天：
+ *   连续则 `(streak % CYCLE) + 1`（第 8 天回第 1 天循环），断签（与上次间隔 > 1 天）则重置为 1。
+ */
+export interface CheckInState {
+  lastDate: string;
+  streak: number;
+}
+
 export interface SaveData {
   version: number;
   settings: GameSettings;
   unlockedCharacters: string[];
   discoveredWeapons: string[];
   progress: GameProgress;
+  /** 全局钱包（需求 35）。 */
+  wallet: Wallet;
+  /** 每日签到状态（需求 35）。 */
+  checkIn: CheckInState;
   /**
    * **每名角色各存一份**未完成的远征（单机），键 = 角色 id。
    *
@@ -92,6 +123,8 @@ export function defaultSave(): SaveData {
     unlockedCharacters: [],
     discoveredWeapons: [],
     progress: defaultProgress(),
+    wallet: { diamonds: 0, coins: 0 },
+    checkIn: { lastDate: '', streak: 0 },
     runs: {},
   };
 }
@@ -200,6 +233,27 @@ function defaultRunStats(): RunState['stats'] {
  * - `legacyRun` 是旧版（SAVE_VERSION ≤ 2）的单个 `run` 槽位，迁移进新结构，
  *   老玩家升级后原有的续玩进度不会丢。
  */
+function parseWallet(raw: unknown): Wallet {
+  if (!raw || typeof raw !== 'object') return { diamonds: 0, coins: 0 };
+  const o = raw as Record<string, unknown>;
+  return {
+    diamonds: Math.max(0, Math.floor(num(o.diamonds, 0))),
+    coins: Math.max(0, Math.floor(num(o.coins, 0))),
+  };
+}
+
+function parseCheckIn(raw: unknown): CheckInState {
+  if (!raw || typeof raw !== 'object') return { lastDate: '', streak: 0 };
+  const o = raw as Record<string, unknown>;
+  const lastDate = typeof o.lastDate === 'string' ? o.lastDate : '';
+  // 日期格式必须是 YYYY-MM-DD，脏数据直接丢弃（避免把非法串当成「已签到」）
+  const okDate = /^\d{4}-\d{2}-\d{2}$/.test(lastDate) ? lastDate : '';
+  return {
+    lastDate: okDate,
+    streak: Math.max(0, Math.floor(num(o.streak, 0))),
+  };
+}
+
 function parseRuns(raw: unknown, legacyRun: unknown): Record<string, SavedRun> {
   const runs: Record<string, SavedRun> = {};
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
@@ -241,6 +295,8 @@ export function parseSave(raw: unknown): SaveData {
     },
     unlockedCharacters: strArray(obj.unlockedCharacters),
     discoveredWeapons: strArray(obj.discoveredWeapons),
+    wallet: parseWallet(obj.wallet),
+    checkIn: parseCheckIn(obj.checkIn),
     runs: parseRuns(obj.runs, obj.run),
     progress: {
       bestFloor: Math.max(1, Math.floor(num(progressRaw.bestFloor, 1))),
@@ -382,6 +438,76 @@ export class SaveManager {
     this.data.runs = {};
     this.save();
   }
+
+  // ------------------------------------------------------------- 每日签到（需求 35）
+
+  /**
+   * 当前签到状态，供主菜单与签到面板读取。
+   * - `canClaim`：今天是否还能签（与 `lastDate===今天` 相反）。
+   * - `day`：今天**应该签到的第几天**——已签时等于已签到的那一天；未签时是「下一次该领的那天」。
+   *   面板用它决定高亮哪一格、以及显示「连签 N 天 / 今日可领」。
+   */
+  getCheckIn(now: Date = new Date()): {
+    lastDate: string;
+    streak: number;
+    day: number;
+    canClaim: boolean;
+  } {
+    const today = localDateKey(now);
+    const claimedToday = this.data.checkIn.lastDate === today;
+    const day = claimedToday
+      ? this.data.checkIn.streak
+      : (this.data.checkIn.streak % CHECKIN_CYCLE) + 1;
+    return {
+      lastDate: this.data.checkIn.lastDate,
+      streak: this.data.checkIn.streak,
+      day,
+      canClaim: !claimedToday,
+    };
+  }
+
+  /**
+   * 领取今日签到奖励。成功返回发放明细（第几天 + 金币 + 钻石），今天已签过则返回 null。
+   * `now` 可注入（默认 `new Date()`），便于测试模拟跨天连续 / 断签。
+   */
+  claimDailyCheckIn(now: Date = new Date()): { day: number; coins: number; diamonds: number } | null {
+    const today = localDateKey(now);
+    if (this.data.checkIn.lastDate === today) return null; // 今日已签，不可重复
+
+    const last = this.data.checkIn.lastDate;
+    let nextDay: number;
+    if (!last) {
+      nextDay = 1; // 首次签到
+    } else {
+      const gap = daysBetween(last, today);
+      // 仅当恰好隔 1 天算「连续」，否则（隔多天 / 脏日期）一律断签重置为第 1 天
+      nextDay = gap === 1 ? (this.data.checkIn.streak % CHECKIN_CYCLE) + 1 : 1;
+    }
+
+    const reward = DAILY_CHECKIN[nextDay - 1]!;
+    this.data.wallet.coins += reward.coins;
+    this.data.wallet.diamonds += reward.diamonds;
+    this.data.checkIn.streak = nextDay;
+    this.data.checkIn.lastDate = today;
+    this.save();
+    return { day: nextDay, coins: reward.coins, diamonds: reward.diamonds };
+  }
+}
+
+/** 本地日期键 `YYYY-MM-DD`（按运行环境本地时区；签到按「本地一天」计）。 */
+export function localDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** 两个 `YYYY-MM-DD` 相差天数（b - a，四舍五入取整）；任一非法日期返回 NaN。 */
+export function daysBetween(a: string, b: string): number {
+  const pa = Date.parse(`${a}T00:00:00`);
+  const pb = Date.parse(`${b}T00:00:00`);
+  if (Number.isNaN(pa) || Number.isNaN(pb)) return NaN;
+  return Math.round((pb - pa) / 86_400_000);
 }
 
 function detectStorage(): StorageLike | null {

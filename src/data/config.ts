@@ -245,3 +245,32 @@ export const PLAYER_COLORS = [
   '#ff8a5a',
   '#b78aff',
 ];
+
+// ------------------------------------------------------------- 每日签到（需求 35）
+
+/** 单日签到的奖励内容。 */
+export interface DailyReward {
+  /** 第几天（1..7，与数组下标 +1 对应） */
+  day: number;
+  coins: number;
+  diamonds: number;
+}
+
+/**
+ * 7 天一轮的签到奖励表，数值由小 w 自行设定（需求 35：用户授权自定规则与数值）。
+ *
+ * 设计：前 6 天以金币为主、穿插少量钻石作为「小甜头」，第 7 天给大额钻石 + 金币作为「周常里程碑」。
+ * 这是奖励数值的唯一出处 —— 任何 UI / 逻辑要显示或发放奖励都从这张表取，不要在别处硬编码。
+ */
+export const DAILY_CHECKIN: readonly DailyReward[] = [
+  { day: 1, coins: 200, diamonds: 0 },
+  { day: 2, coins: 300, diamonds: 0 },
+  { day: 3, coins: 0, diamonds: 10 },
+  { day: 4, coins: 400, diamonds: 0 },
+  { day: 5, coins: 500, diamonds: 0 },
+  { day: 6, coins: 0, diamonds: 15 },
+  { day: 7, coins: 800, diamonds: 30 },
+];
+
+/** 签到周期长度（天）。 */
+export const CHECKIN_CYCLE = DAILY_CHECKIN.length;

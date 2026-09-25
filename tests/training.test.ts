@@ -45,6 +45,7 @@ import {
 } from '../src/systems/save';
 import { buildOverlayButtons, createOverlayState, type OverlayContext } from '../src/ui/overlays';
 import { buildMenuButtons, createMenuState, drawMenu, type MenuData, type MenuState } from '../src/ui/screens';
+import type { CheckInState, Wallet } from '../src/systems/save';
 import { hitTest } from '../src/ui/widgets';
 
 // ------------------------------------------------------------------ Canvas mock
@@ -595,6 +596,8 @@ describe('UI · 训练营选择页', () => {
     discoveredWeapons: [],
     unlockedCharacters: [],
     saves: [],
+    wallet: { diamonds: 0, coins: 0 } as Wallet,
+    checkIn: { lastDate: '', streak: 0 } as CheckInState,
   };
 
   function recordingCtx(): { ctx: CanvasRenderingContext2D; texts: string[] } {
