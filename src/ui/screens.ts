@@ -1,6 +1,7 @@
 /** 大厅界面：主菜单、角色选择、图鉴（武器 / 敌人）、设置入口。 */
 import { TAU, clamp } from '../core/math';
 import { MAX_PLAYERS, PK_MIN_PLAYERS, ROOM_CODE_LEN, DAILY_CHECKIN, CHECKIN_CYCLE } from '../data/config';
+import { TALENTS, talentLevel, talentSpent } from '../data/talents';
 import { CHARACTERS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../data/characters';
 import { WEAPONS, getWeaponDef, type WeaponDef } from '../data/weapons';
 import { ENEMIES, getEnemyDef, type EnemyDef } from '../data/enemies';
@@ -27,7 +28,7 @@ import {
   drawWeaponIcon,
 } from '../render/art';
 
-export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi' | 'training';
+export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi' | 'training' | 'talents';
 
 /** 联机大厅阶段：idle 选模式/建房/加入；room 已在房间内。 */
 export type LobbyPhase = 'idle' | 'room';
@@ -74,6 +75,10 @@ export function createLobbyInfo(): LobbyInfo {
  * 房间内成员最多 4 人，用紧凑行排得下，所以两种状态共用同一尺寸、不跳变。
  */
 const ROOM_PANEL = { x: 640, y: 108, w: 560, h: 286 };
+
+/** 天赋页面板与每行的几何（需求 37）。drawTalentsPanel 与 buildMenuButtons 共用，保证点击区与绘制一致。 */
+const TALENT_PANEL = { x: 160, y: 96, w: 960, h: 536 };
+const TALENT_ROW = { x: 200, y0: 156, w: 880, h: 44, step: 50 };
 
 /** 大厅「身份」面板坐标（与 buildMenuButtons 共用，保证点击区与绘制一致）。 */
 const NAME_BOX = { x: 296, y: 158, w: 372, h: 46 };
@@ -183,6 +188,10 @@ export interface MenuData {
   wallet: Wallet;
   /** 每日签到状态（需求 35），签到面板据此渲染格子。 */
   checkIn: CheckInState;
+  /** 天赋等级表（需求 37），天赋页据此渲染各天赋层级与可用点数。 */
+  talents: Record<string, number>;
+  /** 当前可用天赋点（预算上限 − 已投入），天赋页据此启用「+」按钮。 */
+  talentPointsAvailable: number;
 }
 
 /** 存档列表需要的最少信息（UI 层不直接依赖存档结构）。 */
@@ -265,7 +274,11 @@ function drawTrainSection(
   ctx.restore();
 }
 
-export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[] = []): UiButton[] {
+export function buildMenuButtons(
+  state: MenuState,
+  saves: readonly SaveSlotInfo[] = [],
+  data?: MenuData,
+): UiButton[] {
   const buttons: UiButton[] = [];
   // 有确认弹窗时，页面上原有的按钮一律 disabled：画出来保持版式不跳，
   // 但 hitTest 会跳过它们，于是点击只可能落在弹窗上（真·模态）。
@@ -339,6 +352,71 @@ export function buildMenuButtons(state: MenuState, saves: readonly SaveSlotInfo[
         h: 54,
         style: 'accent',
         enabled: !locked,
+      });
+      // 需求 37：天赋入口。同样放在右侧、签到按钮下方（与左侧按键提示区错开）。
+      buttons.push({
+        id: 'talents',
+        label: '天赋 · 强化初始属性',
+        x: 640,
+        y: 472,
+        w: 560,
+        h: 54,
+        style: 'primary',
+        enabled: !locked,
+      });
+      break;
+    }
+    case 'talents': {
+      // 每个天赋一行：左侧图标 + 名称/描述，右侧「− / +」与等级。
+      // inc 仅在还有可用点数且未到上限时可用；dec 仅在已投入时可用。
+      const tdata = data;
+      const available = tdata ? tdata.talentPointsAvailable : 0;
+      const tlvls = tdata ? tdata.talents : {};
+      for (let i = 0; i < TALENTS.length; i++) {
+        const t = TALENTS[i]!;
+        const y = TALENT_ROW.y0 + i * TALENT_ROW.step;
+        const lvl = talentLevel(tlvls, t.id);
+        const canInc = available > 0 && lvl < t.maxLevel;
+        const canDec = lvl > 0;
+        buttons.push({
+          id: `talent-dec:${t.id}`,
+          label: '−',
+          x: TALENT_ROW.x + TALENT_ROW.w - 152,
+          y,
+          w: 44,
+          h: 36,
+          style: 'ghost',
+          enabled: !locked && canDec,
+        });
+        buttons.push({
+          id: `talent-inc:${t.id}`,
+          label: '+',
+          x: TALENT_ROW.x + TALENT_ROW.w - 96,
+          y,
+          w: 44,
+          h: 36,
+          style: 'accent',
+          enabled: !locked && canInc,
+        });
+      }
+      buttons.push({
+        id: 'talents-reset',
+        label: '重置天赋',
+        x: 360,
+        y: 596,
+        w: 220,
+        h: 44,
+        style: 'danger',
+        enabled: !locked && talentSpent(tlvls) > 0,
+      });
+      buttons.push({
+        id: 'menu-back',
+        label: '返回大厅',
+        x: 700,
+        y: 596,
+        w: 220,
+        h: 44,
+        style: 'ghost',
       });
       break;
     }
@@ -629,6 +707,9 @@ export function drawMenu(
     case 'multi':
       drawLobby(ctx, state, buttons, hoverId, time);
       break;
+    case 'talents':
+      drawTalentsPanel(ctx, state, buttons, hoverId, time, data);
+      break;
     case 'training':
       drawTraining(ctx, state, buttons, hoverId, time);
       break;
@@ -638,6 +719,73 @@ export function drawMenu(
   if (state.lobby.code && state.mode !== 'multi') {
     drawRoomBadge(ctx, state.lobby.code);
   }
+}
+
+// ------------------------------------------------------------- 天赋页（需求 37）
+
+/**
+ * 天赋页：面板 + 标题 + 可用点数 + 8 项天赋行（图标 / 名称 / 描述 / 等级 / 效果）。
+ * 「− / +」「重置 / 返回」等可点击控件由 `buttons` 提供，本函数末尾统一 `drawButton` 渲染。
+ */
+function drawTalentsPanel(
+  ctx: CanvasRenderingContext2D,
+  _state: MenuState,
+  buttons: readonly UiButton[],
+  hoverId: string | null,
+  time: number,
+  data: MenuData,
+): void {
+  drawPanel(ctx, TALENT_PANEL.x, TALENT_PANEL.y, TALENT_PANEL.w, TALENT_PANEL.h, { radius: 18 });
+  drawHeading(ctx, '天赋', 640, 132, 30);
+  drawDivider(ctx, TALENT_PANEL.x + 40, 158, TALENT_PANEL.w - 80);
+
+  // 可用点数提示（顶部右侧）
+  ctx.save();
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 17px "PingFang SC","Segoe UI",sans-serif';
+  ctx.fillStyle = data.talentPointsAvailable > 0 ? UI_COLORS.gold : UI_COLORS.textDim;
+  ctx.fillText(`可用天赋点：${data.talentPointsAvailable}`, TALENT_PANEL.x + TALENT_PANEL.w - 44, 132);
+  ctx.restore();
+
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < TALENTS.length; i++) {
+    const t = TALENTS[i]!;
+    const y = TALENT_ROW.y0 + i * TALENT_ROW.step;
+    const cy = y + TALENT_ROW.h / 2;
+    // 行底分隔线
+    if (i > 0) {
+      ctx.strokeStyle = 'rgba(206,198,232,0.12)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(TALENT_ROW.x, y - (TALENT_ROW.step - TALENT_ROW.h) / 2);
+      ctx.lineTo(TALENT_ROW.x + TALENT_ROW.w, y - (TALENT_ROW.step - TALENT_ROW.h) / 2);
+      ctx.stroke();
+    }
+    const lvl = talentLevel(data.talents, t.id);
+    // 图标（天赋主题色圆）
+    ctx.beginPath();
+    ctx.arc(TALENT_ROW.x + 18, cy, 13, 0, TAU);
+    ctx.fillStyle = t.color;
+    ctx.fill();
+    // 名称 + 描述
+    ctx.textAlign = 'left';
+    ctx.fillStyle = UI_COLORS.text;
+    ctx.font = '700 16px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(t.name, TALENT_ROW.x + 44, cy - 10);
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.font = '500 12px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(`${t.desc} · 每级 ${t.perLevel}`, TALENT_ROW.x + 44, cy + 10);
+    // 当前等级与效果（在 + 按钮左侧）
+    ctx.textAlign = 'right';
+    ctx.fillStyle = lvl > 0 ? t.color : UI_COLORS.textDim;
+    ctx.font = '700 15px "PingFang SC","Segoe UI",sans-serif';
+    ctx.fillText(`Lv ${lvl}/${t.maxLevel}`, TALENT_ROW.x + TALENT_ROW.w - 192, cy);
+  }
+  ctx.restore();
+
+  for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
 }
 
 // ------------------------------------------------------------- 每日签到面板（需求 35）

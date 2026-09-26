@@ -4,6 +4,7 @@
  */
 import type { UpgradeStack } from '../data/upgrades';
 import { CHECKIN_CYCLE, DAILY_CHECKIN } from '../data/config';
+import { TALENTS, clampLevel } from '../data/talents';
 import {
   SAVED_RUN_VERSION,
   type RunState,
@@ -80,6 +81,11 @@ export interface SaveData {
   /** 每日签到状态（需求 35）。 */
   checkIn: CheckInState;
   /**
+   * 天赋等级表（需求 37）：talentId → 已投入层级。账户级、跨局持久化。
+   * 缺省为 `{}`（所有天赋 0 级）。解析时只保留已知 id 且层级夹取 0..maxLevel。
+   */
+  talents: Record<string, number>;
+  /**
    * **每名角色各存一份**未完成的远征（单机），键 = 角色 id。
    *
    * 需求 20 之前这里是单个 `run: SavedRun | null` 槽位：换角色开新局会把上一个人的
@@ -125,6 +131,7 @@ export function defaultSave(): SaveData {
     progress: defaultProgress(),
     wallet: { diamonds: 0, coins: 0 },
     checkIn: { lastDate: '', streak: 0 },
+    talents: {},
     runs: {},
   };
 }
@@ -254,6 +261,18 @@ function parseCheckIn(raw: unknown): CheckInState {
   };
 }
 
+/** 天赋等级表：只保留已知 id，层级夹取 0..maxLevel；脏 / 未知字段丢弃。 */
+function parseTalents(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const o = raw as Record<string, unknown>;
+  for (const t of TALENTS) {
+    const lvl = clampLevel(o[t.id], t.maxLevel);
+    if (lvl > 0) out[t.id] = lvl;
+  }
+  return out;
+}
+
 function parseRuns(raw: unknown, legacyRun: unknown): Record<string, SavedRun> {
   const runs: Record<string, SavedRun> = {};
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
@@ -297,6 +316,7 @@ export function parseSave(raw: unknown): SaveData {
     discoveredWeapons: strArray(obj.discoveredWeapons),
     wallet: parseWallet(obj.wallet),
     checkIn: parseCheckIn(obj.checkIn),
+    talents: parseTalents(obj.talents),
     runs: parseRuns(obj.runs, obj.run),
     progress: {
       bestFloor: Math.max(1, Math.floor(num(progressRaw.bestFloor, 1))),

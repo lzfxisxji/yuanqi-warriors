@@ -2,6 +2,7 @@
 import { RNG, clamp } from '../core/math';
 import type { CharacterDef } from '../data/characters';
 import { addUpgrade, computeMods, defaultMods, rollUpgradeChoices, type Mods, type UpgradeStack } from '../data/upgrades';
+import { applyTalents, talentStartGold } from '../data/talents';
 import type { DungeonPlan } from '../dungeon/dungeon';
 import { generateDungeon } from '../dungeon/dungeon';
 import { Player, createWeaponInstance } from '../entities/player';
@@ -102,6 +103,11 @@ export class RunState {
   bossDefeated = false;
   /** 每层专属 RNG（保证同种子可复现） */
   rng: RNG;
+  /**
+   * 天赋等级表（需求 37）。作为**独立层**保留在 run 上，
+   * `recomputeMods` 在局内强化之上叠加，保证捡强化 / 进层不洗掉天赋。
+   */
+  talentLevels: Record<string, number>;
   stats = {
     kills: 0,
     rooms: 0,
@@ -111,15 +117,20 @@ export class RunState {
     shotsFired: 0,
   };
 
-  constructor(character: CharacterDef, seed: number) {
+  constructor(character: CharacterDef, seed: number, talents: Record<string, number> = {}) {
     this.character = character;
     this.seed = seed >>> 0;
     this.rng = new RNG(this.seed);
+    this.talentLevels = talents;
+    // 天赋作为独立层叠加到基础 mods 之上（基础 = 无强化）
+    this.mods = applyTalents(defaultMods(), this.talentLevels);
     this.player = new Player(character);
     this.plan = generateDungeon({ seed: this.seedForFloor(1), floor: 1 });
     this.currentRoomKey = this.plan.startKey;
     this.player.refreshFromMods(this.mods);
     this.player.hp = this.player.maxHp;
+    // 天赋提供的初始金币（如「财运亨通」），进入新局时一次性注入
+    this.gold = talentStartGold(this.talentLevels);
     this.visited.add(this.plan.startKey);
   }
 
@@ -144,7 +155,8 @@ export class RunState {
 
   recomputeMods(): void {
     const prevMaxHp = this.player.maxHp;
-    this.mods = computeMods(this.upgrades);
+    // 在「局内强化」之上再叠加天赋独立层 —— 否则每次捡强化都会把天赋洗掉
+    this.mods = applyTalents(computeMods(this.upgrades), this.talentLevels);
     this.player.refreshFromMods(this.mods, true);
     // 生命上限提升时直接补满新增部分
     if (this.player.maxHp > prevMaxHp) {

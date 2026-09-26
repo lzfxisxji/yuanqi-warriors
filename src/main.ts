@@ -11,6 +11,7 @@ import { clamp } from './core/math';
 import { DEFAULT_NET_URL, FLOOR_COUNT, PLAYER_COLORS, TRAINING_SEED, VIEW_H, VIEW_W } from './data/config';
 import { CHARACTERS, isCharacterUnlocked } from './data/characters';
 import { WEAPONS } from './data/weapons';
+import { TALENTS, talentLevel, talentPointCap, talentSpent } from './data/talents';
 import { WorldRenderer } from './render/renderer';
 import { AudioSystem } from './systems/audio';
 import { SaveManager } from './systems/save';
@@ -90,7 +91,7 @@ class App implements GameHost {
     this.syncCursor();
 
     // 菜单初始按钮
-    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
+    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots(), this.menuData());
 
     // 刷新/重开页面后，从本地存储恢复「当前房间」显示（连接已断会提示重连）
     const restored = restoreRoom(this.playerName);
@@ -197,6 +198,9 @@ class App implements GameHost {
       saves: this.saveSlots(),
       wallet: this.save.data.wallet,
       checkIn: this.save.data.checkIn,
+      talents: this.save.data.talents,
+      talentPointsAvailable:
+        talentPointCap(this.save.data.progress.bestFloor) - talentSpent(this.save.data.talents),
     };
   }
 
@@ -241,7 +245,7 @@ class App implements GameHost {
 
     const lb = this.menuState.lobby;
     if (this.menuState.mode === 'multi' && lb.joining) this.handleLobbyKeyInput();
-    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
+    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots(), this.menuData());
     const p = this.input.pointer;
     const hovered = hitTest(this.menuButtons, p.sx, p.sy);
     this.hoverId = hovered ? hovered.id : null;
@@ -341,6 +345,44 @@ class App implements GameHost {
       return;
     }
 
+    // 需求 37：天赋增减 / 重置。先算可用点数（上限 − 已投入），再决定能否 +/−。
+    if (id.startsWith('talent-inc:')) {
+      const tid = id.slice('talent-inc:'.length);
+      const def = TALENTS.find((t) => t.id === tid);
+      if (def) {
+        const spent = talentSpent(this.save.data.talents);
+        const available = talentPointCap(this.save.data.progress.bestFloor) - spent;
+        const lvl = talentLevel(this.save.data.talents, tid);
+        if (available > 0 && lvl < def.maxLevel) {
+          this.save.data.talents = { ...this.save.data.talents, [tid]: lvl + 1 };
+          this.save.save();
+          this.audio.play('click', 0.6);
+        } else {
+          this.audio.play('error', 0.5);
+        }
+      }
+      return;
+    }
+    if (id.startsWith('talent-dec:')) {
+      const tid = id.slice('talent-dec:'.length);
+      const lvl = talentLevel(this.save.data.talents, tid);
+      if (lvl > 0) {
+        const next = { ...this.save.data.talents };
+        if (lvl - 1 <= 0) delete next[tid];
+        else next[tid] = lvl - 1;
+        this.save.data.talents = next;
+        this.save.save();
+        this.audio.play('click', 0.6);
+      }
+      return;
+    }
+    if (id === 'talents-reset') {
+      this.save.data.talents = {};
+      this.save.save();
+      this.audio.play('click', 0.6);
+      return;
+    }
+
     switch (id) {
       case 'multi':
         this.openMultiLobby();
@@ -404,6 +446,10 @@ class App implements GameHost {
       case 'settings':
         st.previous = 'main';
         st.mode = 'settings';
+        break;
+      case 'talents':
+        st.previous = 'main';
+        st.mode = 'talents';
         break;
       case 'checkin':
         st.checkinOpen = true;
@@ -613,7 +659,7 @@ class App implements GameHost {
     this.closeLobby();
     this.scene = 'menu';
     this.menuState = createMenuState();
-    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots());
+    this.menuButtons = buildMenuButtons(this.menuState, this.saveSlots(), this.menuData());
     this.hoverId = null;
   }
 

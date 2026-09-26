@@ -598,6 +598,8 @@ describe('UI · 训练营选择页', () => {
     saves: [],
     wallet: { diamonds: 0, coins: 0 } as Wallet,
     checkIn: { lastDate: '', streak: 0 } as CheckInState,
+    talents: {},
+    talentPointsAvailable: 0,
   };
 
   function recordingCtx(): { ctx: CanvasRenderingContext2D; texts: string[] } {

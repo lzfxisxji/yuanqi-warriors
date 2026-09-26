@@ -118,6 +118,8 @@ function menuData(saves: SaveSlotInfo[] = []): MenuData {
     saves,
     wallet: { diamonds: 0, coins: 0 } as Wallet,
     checkIn: { lastDate: '', streak: 0 } as CheckInState,
+    talents: {},
+    talentPointsAvailable: 0,
   };
 }
 

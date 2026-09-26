@@ -293,7 +293,8 @@ export class GameplayScene {
     this.bus = host.bus;
     this.rng = new RNG((seed ^ 0x5bf03635) >>> 0);
     this.training = !!training;
-    this.run = new RunState(getCharacter(characterId), seed);
+    // 需求 37：开局把当前存档里的天赋等级注入 run（独立层，训练/联机同样生效）
+    this.run = new RunState(getCharacter(characterId), seed, host.save.data.talents ?? {});
     if (resume) {
       for (const [key, flags] of Object.entries(resume.rooms)) this.savedRoomFlags[key] = flags;
       this.run.restoreRun(resume);
