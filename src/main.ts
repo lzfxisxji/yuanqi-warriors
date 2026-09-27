@@ -23,6 +23,7 @@ import { NetClient } from './net/NetClient';
 import type { NetMode, PeerInfo } from './net/protocol';
 import {
   CODEX_PAGE_SIZE,
+  bagPageCount,
   buildCheckInButtons,
   buildMenuButtons,
   codexListLength,
@@ -415,6 +416,33 @@ class App implements GameHost {
       return;
     }
 
+    // 需求 39：背包页的三个交互 —— 切栏（装备 / 道具 / 时装）、翻页、左栏人物左右翻。
+    // 统一在这里做前缀判定，避免往 switch 里塞三对 case。
+    if (id.startsWith('bag-tab-')) {
+      const tab = id.slice('bag-tab-'.length);
+      if (tab === 'gear' || tab === 'items' || tab === 'skins') {
+        st.bagTab = tab;
+        // 换栏必须回到第 1 页：`bagPage` 是三栏共用的一格，不归零会把「装备第 2 页」带到道具栏
+        st.bagPage = 0;
+        this.audio.play('click', 0.5);
+      }
+      return;
+    }
+    if (id === 'bag-page-prev' || id === 'bag-page-next') {
+      const pages = bagPageCount(st.bagTab, this.menuData());
+      const step = id === 'bag-page-next' ? 1 : -1;
+      st.bagPage = clamp(st.bagPage + step, 0, pages - 1);
+      this.audio.play('click', 0.5);
+      return;
+    }
+    if (id === 'bag-char-prev' || id === 'bag-char-next') {
+      const total = CHARACTERS.length;
+      const step = id === 'bag-char-next' ? 1 : -1;
+      st.bagChar = (st.bagChar + step + total) % total;
+      this.audio.play('click', 0.5);
+      return;
+    }
+
     switch (id) {
       case 'multi':
         this.openMultiLobby();
@@ -484,15 +512,13 @@ class App implements GameHost {
         st.mode = 'talents';
         break;
       case 'bag':
-      case 'bag-to-forge':
+        // 需求 39：背包与锻造已是**同一页**。进来默认停在「装备」栏（锻造就在那里），
+        // 左栏人物与远征选角同步作为初始值，之后在页内左右翻不会改默认选角。
         st.previous = 'main';
-        st.mode = 'forge';
-        st.forgeSelected = null;
-        break;
-      case 'forge':
-        st.previous = 'main';
-        st.mode = 'forge';
-        st.forgeSelected = null;
+        st.mode = 'bag';
+        st.bagTab = 'gear';
+        st.bagPage = 0;
+        st.bagChar = clamp(st.selectedChar, 0, CHARACTERS.length - 1);
         break;
       case 'checkin':
         st.checkinOpen = true;

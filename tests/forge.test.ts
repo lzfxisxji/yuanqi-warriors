@@ -1,12 +1,13 @@
 /**
- * 锻造系统（需求 38）回归测试。
+ * 锻造系统（需求 38 数据 / 注入 + 需求 39 背包整合）回归测试。
  *
  * 覆盖三层：
  *   1. 数据（`src/data/forge.ts`）纯函数：倍率 / 花费 / 等级夹取 / 存档解析。
  *   2. 注入链路：`RunState` 构造把 `forge` 注入 `player.forgeLevels`，
  *      玩家 `forgeDamageMul` 据此换算（独立层，不随捡强化 / 进层被洗掉）。
- *   3. 两个新面板（背包 / 锻造）的渲染：背包列出全武器（已拥有显名、未获得灰显「？？？」），
- *      锻造只对已拥有的武器出金币 / 钻石双按钮，且余额不足 / 满级时对应按钮禁用。
+ *   3. 背包页（需求 39：**背包与锻造合并成同一页**）：左栏人物 + 右侧「装备 / 道具 / 时装」
+ *      三栏、每栏各 2 页；锻造是装备栏里已拥有武器卡上的金币 / 钻石双按钮
+ *      （余额不足 / 满级时对应按钮禁用）。
  */
 import { describe, expect, test } from 'vitest';
 import {
@@ -19,14 +20,18 @@ import {
 } from '../src/data/forge';
 import { CHARACTERS, DEFAULT_OWNED_WEAPONS, getCharacter } from '../src/data/characters';
 import { WEAPONS } from '../src/data/weapons';
+import { UPGRADES } from '../src/data/upgrades';
 import { RunState } from '../src/systems/run';
 import {
+  bagPageCount,
   buildMenuButtons,
   createMenuState,
   drawMenu,
+  type BagTab,
   type MenuData,
   type MenuState,
 } from '../src/ui/screens';
+import type { UiButton } from '../src/ui/widgets';
 import type { CheckInState, GameProgress, GameSettings, Wallet } from '../src/systems/save';
 
 // ================================================================== 数据层
@@ -199,21 +204,54 @@ function menuData(overrides: Partial<MenuData> = {}): MenuData {
   };
 }
 
-describe('UI · 背包面板（只读武器库）', () => {
-  function bagState(): MenuState {
-    const st = createMenuState();
-    st.mode = 'bag';
-    return st;
-  }
+// ================================================================== UI 层（需求 39：背包 = 左栏人物 + 右栏装备/道具/时装，锻造在装备栏内）
 
-  test('列出全部 12 把武器；已拥有显真名、未获得灰显「？？？」', () => {
-    // 未拾取任何武器（discoveredWeapons 为空）→ 只有起始武器算「拥有」
-    const data = menuData({ discoveredWeapons: [] });
-    const st = bagState();
+/** 渲染背包页某一栏的**所有页**，把文字合并返回（分页后单页只画一部分）。 */
+function renderBagAll(st: MenuState, data: MenuData, tab: BagTab): string {
+  let joined = '';
+  st.bagTab = tab;
+  const pages = bagPageCount(tab, data);
+  for (let p = 0; p < pages; p++) {
+    st.bagPage = p;
     const { ctx, texts } = recordingCtx();
     drawMenu(ctx, st, buildMenuButtons(st, data.saves, data), null, 0.5, data);
+    joined += texts.join('|') + '|';
+  }
+  return joined;
+}
 
-    const joined = texts.join('|');
+/** 汇总背包页某栏所有页的按钮（翻页后会重新注册本页可见条目）。 */
+function bagButtonsAll(st: MenuState, data: MenuData): UiButton[] {
+  const out: UiButton[] = [];
+  const pages = bagPageCount(st.bagTab, data);
+  for (let p = 0; p < pages; p++) {
+    st.bagPage = p;
+    out.push(...buildMenuButtons(st, data.saves, data));
+  }
+  return out;
+}
+
+function bagState(): MenuState {
+  const st = createMenuState();
+  st.mode = 'bag';
+  return st;
+}
+
+describe('UI · 背包页（左栏人物 + 右栏装备/道具/时装）', () => {
+  test('默认进入装备栏；三栏按钮齐全且只有一个高亮', () => {
+    const data = menuData();
+    const st = bagState();
+    const btns = buildMenuButtons(st, data.saves, data);
+    const tabs = btns.filter((b) => b.id.startsWith('bag-tab-'));
+    expect(tabs.map((b) => b.label)).toEqual(['装备', '道具', '时装']);
+    expect(tabs.filter((b) => b.style === 'accent')).toHaveLength(1);
+    expect(tabs.find((b) => b.id === 'bag-tab-gear')?.style).toBe('accent');
+  });
+
+  test('装备栏列出全部 12 把武器；已拥有显真名、未获得灰显「？？？」', () => {
+    const data = menuData({ discoveredWeapons: [] });
+    const st = bagState();
+    const joined = renderBagAll(st, data, 'gear');
     const owned = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
     for (const def of WEAPONS) {
       if (owned.has(def.id)) {
@@ -228,42 +266,39 @@ describe('UI · 背包面板（只读武器库）', () => {
     expect(joined).toContain('尚未获得');
   });
 
-  test('拾取过的武器显名、且有「前往锻造」入口', () => {
+  test('拾取过的武器显名、且有锻造等级与加成百分比', () => {
     const data = menuData({ discoveredWeapons: WEAPONS.map((w) => w.id), forge: { laser: 3 } });
-    const { ctx, texts } = recordingCtx();
     const st = bagState();
-    drawMenu(ctx, st, buildMenuButtons(st, data.saves, data), null, 0.5, data);
-    const joined = texts.join('|');
+    const joined = renderBagAll(st, data, 'gear');
     // 全拥有 → 不应再有「？？？」
     expect(joined).not.toContain('？？？');
     // 锻造过 3 级的激光会显示等级与加成百分比
     expect(joined).toContain('Lv 3');
     expect(joined).toContain('伤害 +');
-    // 进出锻造的入口按钮存在且可点
-    const btn = buildMenuButtons(st, data.saves, data).find((b) => b.id === 'bag-to-forge');
-    expect(btn).toBeDefined();
-    expect(btn!.enabled).not.toBe(false);
+  });
+
+  test('道具栏列出全部强化道具名；时装栏列出全部角色名', () => {
+    const data = menuData();
+    const st = bagState();
+    const itemsText = renderBagAll(st, data, 'items');
+    for (const u of UPGRADES) expect(itemsText).toContain(u.name);
+    const skinsText = renderBagAll(st, data, 'skins');
+    for (const c of CHARACTERS) expect(skinsText).toContain(c.name);
   });
 });
 
-describe('UI · 锻造面板（金币 / 钻石二选一强化）', () => {
-  function forgeState(): MenuState {
-    const st = createMenuState();
-    st.mode = 'forge';
-    return st;
-  }
-
+describe('UI · 锻造（装备栏内：金币 / 钻石二选一强化）', () => {
   test('只对「已拥有」武器出强化按钮；余额不足时金币 / 钻石按钮禁用', () => {
     // 起始武器作为已拥有；钱包为 0 → 两个按钮都应禁用但标签照常显示花费
     const data = menuData({ wallet: { coins: 0, diamonds: 0 } });
-    const st = forgeState();
-    const buttons = buildMenuButtons(st, data.saves, data);
+    const st = bagState();
+    const btns = bagButtonsAll(st, data);
     const owned = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
 
     // 每个已拥有武器各生成一对 forge-coin / forge-diamond 按钮
     for (const id of owned) {
-      const coin = buttons.find((b) => b.id === `forge-coin:${id}`)!;
-      const diamond = buttons.find((b) => b.id === `forge-diamond:${id}`)!;
+      const coin = btns.find((b) => b.id === `forge-coin:${id}`)!;
+      const diamond = btns.find((b) => b.id === `forge-diamond:${id}`)!;
       expect(coin).toBeDefined();
       expect(diamond).toBeDefined();
       expect(coin.enabled).toBe(false); // 0 金币 < 60
@@ -276,27 +311,26 @@ describe('UI · 锻造面板（金币 / 钻石二选一强化）', () => {
     // 未拥有的武器绝不出锻造按钮
     const notOwned = WEAPONS.map((w) => w.id).filter((id) => !owned.has(id));
     for (const id of notOwned) {
-      expect(buttons.find((b) => b.id === `forge-coin:${id}`)).toBeUndefined();
-      expect(buttons.find((b) => b.id === `forge-diamond:${id}`)).toBeUndefined();
+      expect(btns.find((b) => b.id === `forge-coin:${id}`)).toBeUndefined();
+      expect(btns.find((b) => b.id === `forge-diamond:${id}`)).toBeUndefined();
     }
 
-    // 面板渲染不崩，且把花费标签画出来（金币 60 / 钻石 3 出现在画面里）
+    // 面板渲染不崩，且把花费标签画出来（金币 60 出现在画面里）
+    st.bagTab = 'gear';
+    st.bagPage = 0;
     const { ctx, texts } = recordingCtx();
-    drawMenu(ctx, st, buttons, null, 0.5, data);
-    const joined = texts.join('|');
-    expect(joined).toContain('金币 60');
-    expect(joined).toContain('钻石 3');
-    expect(joined).toContain('锻造 · 强化武器');
+    drawMenu(ctx, st, buildMenuButtons(st, data.saves, data), null, 0.5, data);
+    expect(texts.join('|')).toContain('金币 60');
   });
 
   test('金币充足 → 金币按钮可用、钻石不足 → 钻石按钮禁用', () => {
     const data = menuData({ wallet: { coins: 99999, diamonds: 0 } });
-    const st = forgeState();
-    const buttons = buildMenuButtons(st, data.saves, data);
+    const st = bagState();
+    const btns = bagButtonsAll(st, data);
     const owned = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
     for (const id of owned) {
-      expect(buttons.find((b) => b.id === `forge-coin:${id}`)!.enabled).toBe(true);
-      expect(buttons.find((b) => b.id === `forge-diamond:${id}`)!.enabled).toBe(false);
+      expect(btns.find((b) => b.id === `forge-coin:${id}`)!.enabled).toBe(true);
+      expect(btns.find((b) => b.id === `forge-diamond:${id}`)!.enabled).toBe(false);
     }
   });
 
@@ -308,17 +342,29 @@ describe('UI · 锻造面板（金币 / 钻石二选一强化）', () => {
       wallet: { coins: 99999, diamonds: 99999 },
       forge: { [maxedId]: FORGE_MAX_LEVEL },
     });
-    const st = forgeState();
-    const buttons = buildMenuButtons(st, data.saves, data);
-    const coin = buttons.find((b) => b.id === `forge-coin:${maxedId}`)!;
-    const diamond = buttons.find((b) => b.id === `forge-diamond:${maxedId}`)!;
-    expect(coin.enabled).toBe(false);
-    expect(diamond.enabled).toBe(false);
-    expect(coin.label).toBe('已满级');
-    expect(diamond.label).toBe('已满级');
-    // 面板里该武器显示「满级 Lv 12/12」
+    const st = bagState();
+    let coin: UiButton | undefined;
+    let diamond: UiButton | undefined;
+    // 遍历装备栏两页，找到满级武器那一对按钮
+    for (let p = 0; p < 2; p++) {
+      st.bagPage = p;
+      const pageBtns = buildMenuButtons(st, data.saves, data);
+      coin = coin ?? pageBtns.find((b) => b.id === `forge-coin:${maxedId}`);
+      diamond = diamond ?? pageBtns.find((b) => b.id === `forge-diamond:${maxedId}`);
+    }
+    expect(coin).toBeDefined();
+    expect(diamond).toBeDefined();
+    expect(coin!.enabled).toBe(false);
+    expect(diamond!.enabled).toBe(false);
+    expect(coin!.label).toBe('已满级');
+    expect(diamond!.label).toBe('已满级');
+    // 面板里该武器显示「满级 Lv 12/12」（需渲染它所在的页）
+    const idx = WEAPONS.findIndex((w) => w.id === maxedId);
+    const page = Math.floor(idx / 6);
+    st.bagTab = 'gear';
+    st.bagPage = page;
     const { ctx, texts } = recordingCtx();
-    drawMenu(ctx, st, buttons, null, 0.5, data);
+    drawMenu(ctx, st, buildMenuButtons(st, data.saves, data), null, 0.5, data);
     expect(texts.join('|')).toContain(`满级 Lv ${FORGE_MAX_LEVEL}/${FORGE_MAX_LEVEL}`);
   });
 });

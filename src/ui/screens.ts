@@ -5,6 +5,7 @@ import { TALENTS, talentLevel, talentSpent } from '../data/talents';
 import { FORGE_MAX_LEVEL, forgeCost, forgeDamageMul, forgeLevel } from '../data/forge';
 import { CHARACTERS, DEFAULT_OWNED_WEAPONS, getCharacter, isCharacterUnlocked, unlockHint, type CharacterDef } from '../data/characters';
 import { WEAPONS, getWeaponDef, type WeaponDef } from '../data/weapons';
+import { UPGRADES, type UpgradeIcon } from '../data/upgrades';
 import { ENEMIES, getEnemyDef, type EnemyDef } from '../data/enemies';
 import { BOSSES, BOSS_ATTACK_LABELS, bossContactDamage, bossMaxHp, type BossDef } from '../data/bosses';
 import type { GameProgress, GameSettings, Wallet, CheckInState } from '../systems/save';
@@ -29,7 +30,7 @@ import {
   drawWeaponIcon,
 } from '../render/art';
 
-export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi' | 'training' | 'talents' | 'bag' | 'forge';
+export type MenuMode = 'main' | 'charselect' | 'settings' | 'codex' | 'saves' | 'multi' | 'training' | 'talents' | 'bag';
 
 /** 联机大厅阶段：idle 选模式/建房/加入；room 已在房间内。 */
 export type LobbyPhase = 'idle' | 'room';
@@ -77,17 +78,155 @@ export function createLobbyInfo(): LobbyInfo {
  */
 const ROOM_PANEL = { x: 640, y: 108, w: 560, h: 286 };
 
-/** 背包/锻造页武器卡片网格：3 列，最多 4 行（12 把武器）。drawBagPanel / drawForgePanel 与 buildMenuButtons 共用。 */
-const WEAPON_CARD = { cols: 3, x0: 70, y0: 156, w: 360, h: 104, gapX: 22, gapY: 14 };
-function weaponCardRect(i: number): { x: number; y: number; w: number; h: number } {
-  const col = i % WEAPON_CARD.cols;
-  const row = Math.floor(i / WEAPON_CARD.cols);
+// ------------------------------------------- 背包页几何（需求 39：人物 + 装备/道具/时装）
+
+/**
+ * 背包页：**左栏人物 + 右栏分栏网格**。
+ *
+ * 需求 39 把「背包」和「锻造」并成同一页 —— 左栏是人物（可左右切换，与远征选角解耦），
+ * 右栏分「装备 / 道具 / 时装」三栏，每栏各 2 页。锻造不再是独立页面：
+ * 它是装备栏里"已拥有"武器卡片下半部的那一对按钮（金币 / 钻石 二选一）。
+ *
+ * 竖向分区（画布 720 高）：
+ *   y=46 标题 / y=76 副标题 / 右栏分栏按钮 104~150 / 栏说明 166
+ *   网格 182~564 / 翻页 592~632 / 「返回大厅」646~694
+ */
+const BAG_LEFT = { x: 60, y: 110, w: 356, h: 520 };
+const BAG_TAB_ROW = { x: 452, y: 104, w: 244, h: 46, gap: 16 };
+const BAG_GRID = { x: 452, y: 182, w: 768, h: 382, gapX: 16, gapY: 14 };
+const BAG_PAGER_Y = 592;
+const BAG_BACK = { x: 530, y: 646, w: 220, h: 48 };
+
+/** 每栏的页数（需求：「先设置 2 页」）。 */
+export const BAG_PAGES_PER_TAB = 2;
+
+/** 背包分栏（需求 39）。 */
+export type BagTab = 'gear' | 'items' | 'skins';
+
+interface BagTabDef {
+  id: BagTab;
+  label: string;
+  /** 页容量 = cols × rows。三栏的内容条数不同，所以各栏自带网格密度。 */
+  cols: number;
+  rows: number;
+  desc: string;
+}
+
+/**
+ * 分栏表（顺序 = 显示顺序）。加一栏只要往这里补一行，按钮 / 网格 / 分页全跟着走。
+ *
+ * 页容量是按**现有内容条数**挑的，保证每栏正好 2 页：
+ *   装备 12 把武器 ÷ 6 = 2 页；道具 17 个强化 ÷ 9 = 2 页（9 + 8）；时装 6 套 ÷ 4 = 2 页（4 + 2）。
+ */
+const BAG_TABS: ReadonlyArray<BagTabDef> = [
+  { id: 'gear', label: '装备', cols: 2, rows: 3, desc: '已拥有的武器可直接锻造强化（金币 / 钻石二选一）' },
+  { id: 'items', label: '道具', cols: 3, rows: 3, desc: '地牢中可拾取的强化道具，每次远征都能重新遇见' },
+  { id: 'skins', label: '时装', cols: 2, rows: 2, desc: '角色外观，解锁后可在「新的远征」里选用' },
+];
+
+function bagTabDef(tab: BagTab): BagTabDef {
+  return BAG_TABS.find((t) => t.id === tab) ?? BAG_TABS[0]!;
+}
+
+/** 某栏的页容量（列 × 行）。 */
+function bagPageSize(tab: BagTab): number {
+  const def = bagTabDef(tab);
+  return def.cols * def.rows;
+}
+
+/**
+ * 卡片矩形：同一栏共用一个格子尺寸，`index` 是**本页内**的下标。
+ * drawBagPanel 与 buildMenuButtons 共用，保证锻造按钮的点击区与卡片视觉严丝合缝。
+ */
+function bagCardRect(tab: BagTab, index: number): { x: number; y: number; w: number; h: number } {
+  const def = bagTabDef(tab);
+  const w = Math.floor((BAG_GRID.w - BAG_GRID.gapX * (def.cols - 1)) / def.cols);
+  const h = Math.floor((BAG_GRID.h - BAG_GRID.gapY * (def.rows - 1)) / def.rows);
+  const col = index % def.cols;
+  const row = Math.floor(index / def.cols);
   return {
-    x: WEAPON_CARD.x0 + col * (WEAPON_CARD.w + WEAPON_CARD.gapX),
-    y: WEAPON_CARD.y0 + row * (WEAPON_CARD.h + WEAPON_CARD.gapY),
-    w: WEAPON_CARD.w,
-    h: WEAPON_CARD.h,
+    x: BAG_GRID.x + col * (w + BAG_GRID.gapX),
+    y: BAG_GRID.y + row * (h + BAG_GRID.gapY),
+    w,
+    h,
   };
+}
+
+/**
+ * 背包里的一张条目。三栏共用同一份结构，绘制按 `kind` 分派 ——
+ * 这样分页、空槽、翻页计数这些"与内容无关"的逻辑只写一份。
+ */
+interface BagEntry {
+  key: string;
+  kind: 'weapon' | 'item' | 'skin';
+  name: string;
+  /** 卡片副标题（类型 / 解锁状态）。 */
+  sub: string;
+  /** 说明文字（道具栏画在卡内，其他栏留空）。 */
+  desc: string;
+  /** 是否已拥有：武器 = 已发现 ∪ 默认起始武器；时装 = 角色已解锁；道具恒为 true。 */
+  owned: boolean;
+  /** 稀有度（1 普通 / 2 稀有 / 3 史诗），决定卡片描边配色。 */
+  tier: number;
+  weapon?: WeaponDef;
+  icon?: UpgradeIcon;
+  character?: CharacterDef;
+}
+
+/**
+ * 一栏的全部条目（**未分页**，分页由调用方按 `bagPageSize` 切）。
+ *
+ * 道具栏刻意不引入"已获得"概念：强化道具是每局随机出现的，没有账号级库存，
+ * 硬造一份 inventory 只会变成永远为空的死数据。这一栏就是"本作有哪些强化道具"。
+ */
+function bagEntries(tab: BagTab, data: MenuData): BagEntry[] {
+  if (tab === 'items') {
+    return UPGRADES.map((u) => ({
+      key: u.id,
+      kind: 'item' as const,
+      name: u.name,
+      sub: '强化道具',
+      desc: u.perStack,
+      owned: true,
+      tier: 2,
+      icon: u.icon,
+    }));
+  }
+  if (tab === 'skins') {
+    return CHARACTERS.map((c) => {
+      const unlocked = isCharacterUnlocked(c, data.progress);
+      return {
+        key: c.id,
+        kind: 'skin' as const,
+        name: c.name,
+        sub: unlocked ? '已解锁' : unlockHint(c),
+        desc: c.title,
+        owned: unlocked,
+        tier: c.unlock.kind === 'default' ? 1 : 3,
+        character: c,
+      };
+    });
+  }
+  const owned = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
+  return WEAPONS.map((w) => ({
+    key: w.id,
+    kind: 'weapon' as const,
+    name: w.name,
+    sub: `${w.kind === 'melee' ? '近战' : '远程'} · ${tierText(w.tier)}`,
+    desc: '',
+    owned: owned.has(w.id),
+    tier: w.tier,
+    weapon: w,
+  }));
+}
+
+/**
+ * 某栏的页数：内容撑不满时按需求固定给出 `BAG_PAGES_PER_TAB` 页，
+ * 内容再多也不会超过它（多余的条目需要先提高 `BAG_PAGES_PER_TAB` 才会出现）。
+ */
+export function bagPageCount(tab: BagTab, data: MenuData): number {
+  const pages = Math.ceil(bagEntries(tab, data).length / bagPageSize(tab));
+  return clamp(pages, 1, BAG_PAGES_PER_TAB);
 }
 
 /** 天赋页面板与每行的几何（需求 37）。drawTalentsPanel 与 buildMenuButtons 共用，保证点击区与绘制一致。 */
@@ -173,8 +312,19 @@ export interface MenuState {
   trainingWeapon: number;
   /** 需求 35：签到场面板是否打开。是 overlay，不切换 mode（背景仍是主菜单）。 */
   checkinOpen: boolean;
-  /** 需求 38：锻造页当前选中的武器（用于高亮），null = 未选。 */
-  forgeSelected: string | null;
+  /** 需求 39：背包页当前分栏（装备 / 道具 / 时装）。 */
+  bagTab: BagTab;
+  /**
+   * 需求 39：背包页当前页码（0 起）。三栏**共用**这一格 ——
+   * 切栏时在 main.ts 里归零，所以每栏都从自己的第 1 页开始看。
+   */
+  bagPage: number;
+  /**
+   * 需求 39：背包左栏展示的角色下标。
+   * 刻意**不复用** `selectedChar`（那是"远征选角"）：在背包里左右翻角色不应该
+   * 悄悄改掉下次远征的默认角色。
+   */
+  bagChar: number;
 }
 
 export function createMenuState(): MenuState {
@@ -190,7 +340,9 @@ export function createMenuState(): MenuState {
     trainingChar: 0,
     trainingWeapon: 0,
     checkinOpen: false,
-    forgeSelected: null,
+    bagTab: 'gear',
+    bagPage: 0,
+    bagChar: 0,
   };
 }
 
@@ -383,25 +535,16 @@ export function buildMenuButtons(
         style: 'primary',
         enabled: !locked,
       });
-      // 需求 38：背包 / 锻造入口，继续往下一行排（仍在右侧、不与左侧按键提示区冲突）。
+      // 需求 39：背包与锻造合并成**一个入口**（同一页）—— 左栏人物，右栏装备/道具/时装，
+      // 锻造就在装备栏里。继续往下一行排（仍在右侧、不与左侧按键提示区冲突）。
       buttons.push({
         id: 'bag',
-        label: '背包 · 我的武器库',
+        label: '背包 · 装备/道具/时装 · 含锻造',
         x: 640,
         y: 534,
         w: 560,
         h: 54,
         style: 'accent',
-        enabled: !locked,
-      });
-      buttons.push({
-        id: 'forge',
-        label: '锻造 · 强化武器（金币/钻石）',
-        x: 640,
-        y: 596,
-        w: 560,
-        h: 54,
-        style: 'primary',
         enabled: !locked,
       });
       break;
@@ -461,74 +604,109 @@ export function buildMenuButtons(
       break;
     }
     case 'bag': {
-      // 背包：纯"武器库"查看页。所有武器以卡片网格展示，已拥有高亮 + 锻造等级；
-      // 锁定的（尚未在地牢中获得）灰显"未获得"。跳转锻造走一个明显的按钮，不在卡片上做点击区。
-      buttons.push({
-        id: 'bag-to-forge',
-        label: '前往锻造 →',
-        x: 500,
-        y: 596,
-        w: 280,
-        h: 50,
-        style: 'accent',
-        enabled: !locked,
+      // 需求 39：背包与锻造合并成**同一页** —— 左侧人物（可左右切换），右侧「装备 / 道具 / 时装」
+      // 三栏，每栏各 2 页。锻造不再有独立页面：它就是装备栏里"已拥有"武器卡片下半部的那对按钮。
+      BAG_TABS.forEach((t, i) => {
+        buttons.push({
+          id: `bag-tab-${t.id}`,
+          label: t.label,
+          x: BAG_TAB_ROW.x + i * (BAG_TAB_ROW.w + BAG_TAB_ROW.gap),
+          y: BAG_TAB_ROW.y,
+          w: BAG_TAB_ROW.w,
+          h: BAG_TAB_ROW.h,
+          style: state.bagTab === t.id ? 'accent' : 'ghost',
+        });
       });
+      // 左栏人物左右切换（首尾循环，永远可点）。
       buttons.push({
-        id: 'menu-back',
-        label: '返回大厅',
-        x: 500,
-        y: 654,
-        w: 280,
-        h: 46,
+        id: 'bag-char-prev',
+        label: '‹',
+        x: BAG_LEFT.x + 10,
+        y: BAG_LEFT.y + 10,
+        w: 40,
+        h: 40,
         style: 'ghost',
       });
-      break;
-    }
-    case 'forge': {
-      // 锻造：仅列出"已拥有"的武器，每把卡片下方两个强化按钮（金币 / 钻石 二选一）。
-      // 二选一的花费由 `forgeCost(level)` 给出；满级或余额不足时对应按钮禁用。
-      // 卡片视觉（图标 / 名称 / 等级）由 drawForgePanel 绘制，按钮矩形必须与网格几何一致。
-      const fdata = data;
-      if (!fdata) break;
-      const owned = new Set<string>([...fdata.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
-      let idx = 0;
-      for (const def of WEAPONS) {
-        if (!owned.has(def.id)) continue;
-        const r = weaponCardRect(idx);
-        idx++;
-        const level = forgeLevel(fdata.forge, def.id);
-        const atMax = level >= FORGE_MAX_LEVEL;
-        const cost = forgeCost(level);
-        const inner = r.w - 32;
-        const bw = (inner - 8) / 2;
-        buttons.push({
-          id: `forge-coin:${def.id}`,
-          label: atMax ? '已满级' : `金币 ${cost.coins}`,
-          x: r.x + 16,
-          y: r.y + r.h - 46,
-          w: bw,
-          h: 34,
-          style: 'accent',
-          enabled: !locked && !atMax && fdata.wallet.coins >= cost.coins,
-        });
-        buttons.push({
-          id: `forge-diamond:${def.id}`,
-          label: atMax ? '已满级' : `钻石 ${cost.diamonds}`,
-          x: r.x + 16 + bw + 8,
-          y: r.y + r.h - 46,
-          w: bw,
-          h: 34,
-          style: 'primary',
-          enabled: !locked && !atMax && fdata.wallet.diamonds >= cost.diamonds,
-        });
+      buttons.push({
+        id: 'bag-char-next',
+        label: '›',
+        x: BAG_LEFT.x + BAG_LEFT.w - 50,
+        y: BAG_LEFT.y + 10,
+        w: 40,
+        h: 40,
+        style: 'ghost',
+      });
+
+      const bdata = data;
+      if (bdata) {
+        const size = bagPageSize(state.bagTab);
+        const pages = bagPageCount(state.bagTab, bdata);
+        const page = clamp(state.bagPage, 0, pages - 1);
+        if (pages > 1) {
+          buttons.push({
+            id: 'bag-page-prev',
+            label: '上一页',
+            x: BAG_GRID.x,
+            y: BAG_PAGER_Y,
+            w: 110,
+            h: 40,
+            style: 'ghost',
+            enabled: page > 0,
+          });
+          buttons.push({
+            id: 'bag-page-next',
+            label: '下一页',
+            x: BAG_GRID.x + 122,
+            y: BAG_PAGER_Y,
+            w: 110,
+            h: 40,
+            style: 'ghost',
+            enabled: page < pages - 1,
+          });
+        }
+
+        // 锻造按钮只挂在「装备」栏**本页可见**的已拥有武器上；矩形与 bagCardRect 严格同源，
+        // 否则点击区会错位到别的卡片上（翻页后尤其明显）。
+        if (state.bagTab === 'gear') {
+          const visible = bagEntries('gear', bdata).slice(page * size, page * size + size);
+          visible.forEach((e, i) => {
+            const wdef = e.weapon;
+            if (!e.owned || !wdef) return;
+            const r = bagCardRect('gear', i);
+            const level = forgeLevel(bdata.forge, wdef.id);
+            const atMax = level >= FORGE_MAX_LEVEL;
+            const cost = forgeCost(level);
+            const bw = (r.w - 38) / 2;
+            buttons.push({
+              id: `forge-coin:${wdef.id}`,
+              label: atMax ? '已满级' : `金币 ${cost.coins}`,
+              x: r.x + 14,
+              y: r.y + r.h - 40,
+              w: bw,
+              h: 32,
+              style: 'accent',
+              enabled: !locked && !atMax && bdata.wallet.coins >= cost.coins,
+            });
+            buttons.push({
+              id: `forge-diamond:${wdef.id}`,
+              label: atMax ? '已满级' : `钻石 ${cost.diamonds}`,
+              x: r.x + 14 + bw + 10,
+              y: r.y + r.h - 40,
+              w: bw,
+              h: 32,
+              style: 'primary',
+              enabled: !locked && !atMax && bdata.wallet.diamonds >= cost.diamonds,
+            });
+          });
+        }
       }
       buttons.push({
         id: 'menu-back',
         label: '返回大厅',
-        x: 500,
-        y: 654,
-        w: 280,
-        h: 46,
+        x: BAG_BACK.x,
+        y: BAG_BACK.y,
+        w: BAG_BACK.w,
+        h: BAG_BACK.h,
         style: 'ghost',
       });
       break;
@@ -826,9 +1004,6 @@ export function drawMenu(
     case 'bag':
       drawBagPanel(ctx, state, buttons, hoverId, time, data);
       break;
-    case 'forge':
-      drawForgePanel(ctx, state, buttons, hoverId, time, data);
-      break;
     case 'training':
       drawTraining(ctx, state, buttons, hoverId, time);
       break;
@@ -907,79 +1082,250 @@ function drawTalentsPanel(
   for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
 }
 
-// ------------------------------------------------------------- 背包页 / 锻造页（需求 38）
+// ------------------------------------------------- 背包页（需求 39：人物 + 装备/道具/时装）
+
+const BAG_FONT = '"PingFang SC","Segoe UI",sans-serif';
 
 /** 把 tier 数字转成中文（普通 / 稀有 / 史诗）。 */
 function tierText(tier: number): string {
   return tier === 1 ? '普通' : tier === 2 ? '稀有' : '史诗';
 }
 
-/**
- * 背包页：武器库查看。所有武器以卡片网格展示 —— 已拥有（已发现 ∪ 默认起始武器）高亮 +
- * 金色描边 + 锻造等级；未获得的灰显"？？？ / 尚未获得"。纯查看，跳转锻造走独立按钮。
- */
-function drawBagPanel(
+/** 卡片描边：史诗红 / 稀有薄荷 / 普通金；未拥有一律灰。 */
+function bagTierColor(owned: boolean, tier: number): string {
+  if (!owned) return 'rgba(140,132,170,0.28)';
+  if (tier >= 3) return 'rgba(255,138,138,0.72)';
+  if (tier === 2) return 'rgba(126,242,192,0.6)';
+  return UI_COLORS.gold;
+}
+
+/** 卡片底板（三栏共用）。alpha 由调用方设置：未拥有走 0.55 压暗。 */
+function drawBagCardBase(
   ctx: CanvasRenderingContext2D,
-  _state: MenuState,
-  buttons: readonly UiButton[],
-  hoverId: string | null,
-  time: number,
+  r: { x: number; y: number; w: number; h: number },
+  owned: boolean,
+  tier: number,
+): void {
+  ctx.fillStyle = 'rgba(22,18,34,0.9)';
+  roundRect(ctx, r.x, r.y, r.w, r.h, 12);
+  ctx.fill();
+  ctx.strokeStyle = bagTierColor(owned, tier);
+  ctx.lineWidth = owned ? 2 : 1.2;
+  ctx.stroke();
+}
+
+/**
+ * 装备卡：图标 + 名称 + 类型/稀有度 + 锻造等级。
+ * 已拥有的卡片下半部留着金币 / 钻石两个强化按钮（矩形由 `bagCardRect` 算出，与这里同源）。
+ */
+function drawBagGearCard(
+  ctx: CanvasRenderingContext2D,
+  r: { x: number; y: number; w: number; h: number },
+  entry: BagEntry,
   data: MenuData,
 ): void {
+  const wdef = entry.weapon;
+  if (!wdef) return;
   ctx.save();
-  ctx.fillStyle = 'rgba(9,7,15,0.72)';
-  ctx.fillRect(0, 0, 1280, 720);
+  ctx.globalAlpha = entry.owned ? 1 : 0.55;
+  drawBagCardBase(ctx, r, entry.owned, entry.tier);
+  drawWeaponIcon(ctx, wdef, r.x + 44, r.y + 44, 56);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = entry.owned ? UI_COLORS.text : 'rgba(150,142,182,0.7)';
+  ctx.font = `700 16px ${BAG_FONT}`;
+  ctx.fillText(entry.owned ? wdef.name : '？？？', r.x + 84, r.y + 28);
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = `500 12px ${BAG_FONT}`;
+  ctx.fillText(entry.owned ? entry.sub : '尚未获得', r.x + 84, r.y + 50);
+  if (entry.owned) {
+    const level = forgeLevel(data.forge, wdef.id);
+    const atMax = level >= FORGE_MAX_LEVEL;
+    ctx.fillStyle = atMax ? UI_COLORS.mint : level > 0 ? UI_COLORS.gold : UI_COLORS.textDim;
+    ctx.font = `700 13px ${BAG_FONT}`;
+    const label = atMax
+      ? `满级 Lv ${level}/${FORGE_MAX_LEVEL}`
+      : level > 0
+        ? `Lv ${level}/${FORGE_MAX_LEVEL} · 伤害 +${Math.round((forgeDamageMul(level) - 1) * 100)}%`
+        : '未锻造 · 金币或钻石强化';
+    ctx.fillText(label, r.x + 84, r.y + 70);
+  } else {
+    ctx.fillStyle = 'rgba(150,142,182,0.6)';
+    ctx.font = `500 12px ${BAG_FONT}`;
+    ctx.fillText('在地牢中拾取后解锁', r.x + 84, r.y + 70);
+  }
   ctx.restore();
-  drawHeading(ctx, '背包', 640, 52, 30);
+}
+
+/** 道具卡：强化图标 + 名称 + 效果文案（栏内卡片窄、文案长，用 wrapText 兜底）。 */
+function drawBagItemCard(
+  ctx: CanvasRenderingContext2D,
+  r: { x: number; y: number; w: number; h: number },
+  entry: BagEntry,
+): void {
+  ctx.save();
+  drawBagCardBase(ctx, r, true, entry.tier);
+  if (entry.icon) drawUpgradeIcon(ctx, entry.icon, r.x + 34, r.y + 36, 40);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.text;
+  ctx.font = `700 14px ${BAG_FONT}`;
+  ctx.fillText(entry.name, r.x + 62, r.y + 26);
+  ctx.fillStyle = UI_COLORS.mint;
+  ctx.font = `600 10.5px ${BAG_FONT}`;
+  ctx.fillText(entry.sub, r.x + 62, r.y + 44);
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = `500 11.5px ${BAG_FONT}`;
+  wrapText(ctx, entry.desc, r.x + 12, r.y + 70, r.w - 24, 15);
+  ctx.restore();
+}
+
+/** 时装卡：立绘 + 名称 + 解锁状态（未解锁的立绘走 `locked` 配色并压暗）。 */
+function drawBagSkinCard(
+  ctx: CanvasRenderingContext2D,
+  r: { x: number; y: number; w: number; h: number },
+  entry: BagEntry,
+  time: number,
+): void {
+  const ch = entry.character;
+  if (!ch) return;
+  ctx.save();
+  ctx.globalAlpha = entry.owned ? 1 : 0.62;
+  drawBagCardBase(ctx, r, entry.owned, entry.tier);
+  drawCharacterPortrait(ctx, ch, r.x + r.w / 2, r.y + 96, 1.35, time, !entry.owned);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = entry.owned ? UI_COLORS.text : 'rgba(160,152,190,0.8)';
+  ctx.font = `700 16px ${BAG_FONT}`;
+  ctx.fillText(ch.name, r.x + r.w / 2, r.y + 152);
+  ctx.fillStyle = entry.owned ? UI_COLORS.mint : 'rgba(255,154,138,0.85)';
+  ctx.font = `600 12px ${BAG_FONT}`;
+  ctx.fillText(entry.sub, r.x + r.w / 2, r.y + 172);
+  ctx.restore();
+}
+
+/** 内容不足以填满本页时的占位槽（例：时装第 2 页只放得下 2 套）。 */
+function drawBagEmptySlot(
+  ctx: CanvasRenderingContext2D,
+  r: { x: number; y: number; w: number; h: number },
+): void {
+  ctx.save();
+  ctx.globalAlpha = 0.4;
+  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = 'rgba(140,132,170,0.5)';
+  ctx.lineWidth = 1.4;
+  roundRect(ctx, r.x, r.y, r.w, r.h, 12);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = `500 12px ${BAG_FONT}`;
+  ctx.fillText('待补充', r.x + r.w / 2, r.y + r.h / 2);
+  ctx.restore();
+}
+
+/**
+ * 背包左栏：当前人物。立绘 + 姓名 / 称号 + 三条能力条 + 账号级进度。
+ * 左右两个「‹ ›」按钮由 `buildMenuButtons` 注册，本函数只画框与内容。
+ */
+function drawBagLeftPanel(
+  ctx: CanvasRenderingContext2D,
+  state: MenuState,
+  data: MenuData,
+  time: number,
+): void {
+  ctx.save();
+  ctx.fillStyle = 'rgba(18,14,28,0.9)';
+  roundRect(ctx, BAG_LEFT.x, BAG_LEFT.y, BAG_LEFT.w, BAG_LEFT.h, 16);
+  ctx.fill();
+  ctx.strokeStyle = UI_COLORS.border;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+  ctx.restore();
+
+  const def = CHARACTERS[clamp(state.bagChar, 0, CHARACTERS.length - 1)] ?? CHARACTERS[0]!;
+  const cx = BAG_LEFT.x + BAG_LEFT.w / 2;
+
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = UI_COLORS.textDim;
-  ctx.font = '500 14px "PingFang SC","Segoe UI",sans-serif';
-  ctx.fillText('已拥有的武器（金色描边）展示锻造等级；未获得的灰显。', 640, 84);
+  ctx.font = `600 12px ${BAG_FONT}`;
+  ctx.fillText('当前角色', cx, BAG_LEFT.y + 18);
   ctx.restore();
 
-  const owned = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
-  for (let i = 0; i < WEAPONS.length; i++) {
-    const def = WEAPONS[i]!;
-    const r = weaponCardRect(i);
-    const isOwned = owned.has(def.id);
-    const level = forgeLevel(data.forge, def.id);
+  drawCharacterPortrait(ctx, def, cx, BAG_LEFT.y + 152, 2.2, time, false);
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.text;
+  ctx.font = `800 22px ${BAG_FONT}`;
+  ctx.fillText(def.name, cx, BAG_LEFT.y + 262);
+  ctx.fillStyle = UI_COLORS.gold;
+  ctx.font = `600 13px ${BAG_FONT}`;
+  ctx.fillText(def.title, cx, BAG_LEFT.y + 288);
+  ctx.restore();
+
+  drawDivider(ctx, BAG_LEFT.x + 20, BAG_LEFT.y + 310, BAG_LEFT.w - 40);
+
+  // 三条能力条（与选角页同一份 `def.bars`，换角色时同步变化）
+  let by = BAG_LEFT.y + 334;
+  const barX = BAG_LEFT.x + 96;
+  const barW = BAG_LEFT.x + BAG_LEFT.w - 20 - barX;
+  for (const bar of def.bars) {
     ctx.save();
-    ctx.globalAlpha = isOwned ? 1 : 0.55;
-    ctx.fillStyle = 'rgba(22,18,34,0.9)';
-    roundRect(ctx, r.x, r.y, r.w, r.h, 12);
-    ctx.fill();
-    ctx.strokeStyle = isOwned ? UI_COLORS.gold : 'rgba(140,132,170,0.28)';
-    ctx.lineWidth = isOwned ? 2 : 1.2;
-    ctx.stroke();
-    drawWeaponIcon(ctx, def, r.x + 8, r.y + 4, 52);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = isOwned ? UI_COLORS.text : 'rgba(150,142,182,0.7)';
-    ctx.font = '700 15px "PingFang SC","Segoe UI",sans-serif';
-    ctx.fillText(isOwned ? def.name : '？？？', r.x + 70, r.y + 26);
     ctx.fillStyle = UI_COLORS.textDim;
-    ctx.font = '500 12px "PingFang SC","Segoe UI",sans-serif';
-    const sub = isOwned ? `${def.kind === 'melee' ? '近战' : '远程'} · ${tierText(def.tier)}` : '尚未获得';
-    ctx.fillText(sub, r.x + 70, r.y + 48);
-    if (isOwned && level > 0) {
-      ctx.fillStyle = UI_COLORS.gold;
-      ctx.font = '700 13px "PingFang SC","Segoe UI",sans-serif';
-      const mul = forgeDamageMul(level);
-      ctx.fillText(`Lv ${level} · 伤害 +${Math.round((mul - 1) * 100)}%`, r.x + 70, r.y + 70);
-    }
+    ctx.font = `600 12px ${BAG_FONT}`;
+    ctx.fillText(bar.label, BAG_LEFT.x + 20, by);
+    ctx.fillStyle = 'rgba(10,8,18,0.8)';
+    roundRect(ctx, barX, by - 5, barW, 10, 5);
+    ctx.fill();
+    ctx.fillStyle = def.palette.accent;
+    roundRect(ctx, barX, by - 5, barW * clamp(bar.value, 0, 1), 10, 5);
+    ctx.fill();
     ctx.restore();
+    by += 26;
   }
 
-  for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
+  drawDivider(ctx, BAG_LEFT.x + 20, BAG_LEFT.y + 424, BAG_LEFT.w - 40);
+
+  // 账号级进度（与右栏内容无关，换角色 / 翻页都不变）
+  const ownedWeapons = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]).size;
+  const forgeTotal = WEAPONS.reduce((sum, w) => sum + forgeLevel(data.forge, w.id), 0);
+  const unlockedSkins = CHARACTERS.filter((c) => isCharacterUnlocked(c, data.progress)).length;
+  const rows: [string, string][] = [
+    ['已解锁武器', `${ownedWeapons} / ${WEAPONS.length}`],
+    ['锻造总等级', `${forgeTotal} 级`],
+    ['已解锁外观', `${unlockedSkins} / ${CHARACTERS.length}`],
+  ];
+  let ry = BAG_LEFT.y + 452;
+  for (const [label, value] of rows) {
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.font = `600 12.5px ${BAG_FONT}`;
+    ctx.fillText(label, BAG_LEFT.x + 24, ry);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = UI_COLORS.gold;
+    ctx.font = `700 13px ${BAG_FONT}`;
+    ctx.fillText(value, BAG_LEFT.x + BAG_LEFT.w - 24, ry);
+    ctx.restore();
+    ry += 28;
+  }
 }
 
 /**
- * 锻造页：仅列出已拥有的武器，每把卡片下方两个强化按钮（金币 / 钻石 二选一）。
- * 卡片视觉由本函数绘制，按钮矩形与 `buildMenuButtons` 的 `'forge'` 分支共用 `weaponCardRect` 几何。
+ * 背包页（需求 39）：左栏人物 + 右栏分栏网格。
+ *
+ * 这一页取代了需求 38 的「背包页 + 锻造页」两张页面 —— 锻造按钮直接长在装备卡上，
+ * 钱包芯片常驻右上角。强化后按钮可用态实时刷新（`buildMenuButtons` 每帧重建）。
  */
-function drawForgePanel(
+function drawBagPanel(
   ctx: CanvasRenderingContext2D,
   state: MenuState,
   buttons: readonly UiButton[],
@@ -991,42 +1337,65 @@ function drawForgePanel(
   ctx.fillStyle = 'rgba(9,7,15,0.72)';
   ctx.fillRect(0, 0, 1280, 720);
   ctx.restore();
-  drawHeading(ctx, '锻造 · 强化武器', 640, 52, 30);
-  // 右上角常驻钱包，确认强化花费实时可见
-  drawWalletChip(ctx, data.wallet, 1240, 38);
+  drawHeading(ctx, '背包', 640, 46, 30);
+  drawWalletChip(ctx, data.wallet, 1240, 34);
 
-  const owned = new Set<string>([...data.discoveredWeapons, ...DEFAULT_OWNED_WEAPONS]);
-  let idx = 0;
-  for (const def of WEAPONS) {
-    if (!owned.has(def.id)) continue;
-    const r = weaponCardRect(idx);
-    idx++;
-    const level = forgeLevel(data.forge, def.id);
-    const atMax = level >= FORGE_MAX_LEVEL;
-    const mul = forgeDamageMul(level);
-    const selected = state.forgeSelected === def.id;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.textDim;
+  ctx.font = `500 13px ${BAG_FONT}`;
+  ctx.fillText(
+    `左侧人物 · 右侧装备 / 道具 / 时装（各 ${BAG_PAGES_PER_TAB} 页）`,
+    640,
+    76,
+  );
+  ctx.restore();
+
+  drawBagLeftPanel(ctx, state, data, time);
+
+  // 右栏底板 + 当前栏说明（说明文字落在分栏按钮与网格之间）
+  const tabDef = bagTabDef(state.bagTab);
+  ctx.save();
+  ctx.fillStyle = 'rgba(16,13,26,0.72)';
+  roundRect(ctx, BAG_GRID.x - 12, BAG_GRID.y - 30, BAG_GRID.w + 24, BAG_GRID.h + 30, 16);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(140,132,170,0.18)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = UI_COLORS.mint;
+  ctx.font = `600 12.5px ${BAG_FONT}`;
+  ctx.fillText(tabDef.desc, BAG_GRID.x, BAG_GRID.y - 15);
+  ctx.restore();
+
+  const size = bagPageSize(state.bagTab);
+  const pages = bagPageCount(state.bagTab, data);
+  const page = clamp(state.bagPage, 0, pages - 1);
+  const entries = bagEntries(state.bagTab, data);
+  const visible = entries.slice(page * size, page * size + size);
+
+  visible.forEach((e, i) => {
+    const r = bagCardRect(state.bagTab, i);
+    if (e.kind === 'weapon') drawBagGearCard(ctx, r, e, data);
+    else if (e.kind === 'item') drawBagItemCard(ctx, r, e);
+    else drawBagSkinCard(ctx, r, e, time);
+  });
+  for (let i = visible.length; i < size; i++) drawBagEmptySlot(ctx, bagCardRect(state.bagTab, i));
+
+  if (pages > 1) {
     ctx.save();
-    ctx.fillStyle = 'rgba(22,18,34,0.92)';
-    roundRect(ctx, r.x, r.y, r.w, r.h, 12);
-    ctx.fill();
-    ctx.strokeStyle = selected ? UI_COLORS.gold : 'rgba(126,242,192,0.3)';
-    ctx.lineWidth = selected ? 2.4 : 1.2;
-    ctx.stroke();
-    drawWeaponIcon(ctx, def, r.x + 8, r.y + 4, 50);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = UI_COLORS.text;
-    ctx.font = '700 15px "PingFang SC","Segoe UI",sans-serif';
-    ctx.fillText(def.name, r.x + 66, r.y + 24);
-    ctx.fillStyle = atMax ? UI_COLORS.textDim : UI_COLORS.gold;
-    ctx.font = '700 13px "PingFang SC","Segoe UI",sans-serif';
-    ctx.fillText(atMax ? `满级 Lv ${level}/${FORGE_MAX_LEVEL}` : `Lv ${level}/${FORGE_MAX_LEVEL} · 伤害 +${Math.round((mul - 1) * 100)}%`, r.x + 66, r.y + 46);
+    ctx.fillStyle = UI_COLORS.textDim;
+    ctx.font = `600 13px ${BAG_FONT}`;
+    ctx.fillText(`第 ${page + 1} / ${pages} 页 · 共 ${entries.length} 件`, BAG_GRID.x + 248, BAG_PAGER_Y + 20);
     ctx.restore();
   }
 
   for (const b of buttons) drawButton(ctx, b, hoverId === b.id, false, time);
 }
-
 // ------------------------------------------------------------- 每日签到面板（需求 35）
 
 /** 面板底部的动作按钮。注意：这些按钮**不进** `buildMenuButtons`，由主菜单 overlay 模式单独绘制与命中。 */

@@ -8,3 +8,5 @@ _env.txt
 .*.txt
 # playwright-cli 的会话缓存（快照 / 截图），不入库
 .playwright-cli/
+# vite/tsc 编译缓存残留（node-compile-cache 等），不入库
+.tmp/
