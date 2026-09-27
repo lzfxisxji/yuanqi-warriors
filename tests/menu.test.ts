@@ -120,6 +120,7 @@ function menuData(saves: SaveSlotInfo[] = []): MenuData {
     checkIn: { lastDate: '', streak: 0 } as CheckInState,
     talents: {},
     talentPointsAvailable: 0,
+    forge: {},
   };
 }
 

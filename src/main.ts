@@ -12,6 +12,7 @@ import { DEFAULT_NET_URL, FLOOR_COUNT, PLAYER_COLORS, TRAINING_SEED, VIEW_H, VIE
 import { CHARACTERS, isCharacterUnlocked } from './data/characters';
 import { WEAPONS } from './data/weapons';
 import { TALENTS, talentLevel, talentPointCap, talentSpent } from './data/talents';
+import { FORGE_MAX_LEVEL, forgeCost, forgeLevel } from './data/forge';
 import { WorldRenderer } from './render/renderer';
 import { AudioSystem } from './systems/audio';
 import { SaveManager } from './systems/save';
@@ -201,6 +202,7 @@ class App implements GameHost {
       talents: this.save.data.talents,
       talentPointsAvailable:
         talentPointCap(this.save.data.progress.bestFloor) - talentSpent(this.save.data.talents),
+      forge: this.save.data.forge,
     };
   }
 
@@ -383,6 +385,36 @@ class App implements GameHost {
       return;
     }
 
+    // 需求 38：锻造强化（金币 / 钻石 二选一）。先查当前等级与花费，校验货币是否足够、是否满级。
+    if (id.startsWith('forge-coin:') || id.startsWith('forge-diamond:')) {
+      const wid = id.slice(id.indexOf(':') + 1);
+      const useDiamond = id.startsWith('forge-diamond:');
+      const level = forgeLevel(this.save.data.forge, wid);
+      if (level >= FORGE_MAX_LEVEL) {
+        this.audio.play('error', 0.5);
+        return;
+      }
+      const cost = forgeCost(level);
+      const wallet = this.save.data.wallet;
+      if (useDiamond) {
+        if (wallet.diamonds < cost.diamonds) {
+          this.audio.play('error', 0.5);
+          return;
+        }
+        this.save.data.wallet = { ...wallet, diamonds: wallet.diamonds - cost.diamonds };
+      } else {
+        if (wallet.coins < cost.coins) {
+          this.audio.play('error', 0.5);
+          return;
+        }
+        this.save.data.wallet = { ...wallet, coins: wallet.coins - cost.coins };
+      }
+      this.save.data.forge = { ...this.save.data.forge, [wid]: level + 1 };
+      this.save.save();
+      this.audio.play('upgrade', 0.6);
+      return;
+    }
+
     switch (id) {
       case 'multi':
         this.openMultiLobby();
@@ -450,6 +482,17 @@ class App implements GameHost {
       case 'talents':
         st.previous = 'main';
         st.mode = 'talents';
+        break;
+      case 'bag':
+      case 'bag-to-forge':
+        st.previous = 'main';
+        st.mode = 'forge';
+        st.forgeSelected = null;
+        break;
+      case 'forge':
+        st.previous = 'main';
+        st.mode = 'forge';
+        st.forgeSelected = null;
         break;
       case 'checkin':
         st.checkinOpen = true;

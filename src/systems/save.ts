@@ -4,6 +4,7 @@
  */
 import type { UpgradeStack } from '../data/upgrades';
 import { CHECKIN_CYCLE, DAILY_CHECKIN } from '../data/config';
+import { parseForge } from '../data/forge';
 import { TALENTS, clampLevel } from '../data/talents';
 import {
   SAVED_RUN_VERSION,
@@ -86,6 +87,11 @@ export interface SaveData {
    */
   talents: Record<string, number>;
   /**
+   * 锻造等级表（需求 38）：weaponId → 已锻造层级（0 = 未锻造）。账户级、跨局持久化。
+   * 进入远征时注入到 `Player.forgeLevels`，局内该武器伤害按层级加成。
+   */
+  forge: Record<string, number>;
+  /**
    * **每名角色各存一份**未完成的远征（单机），键 = 角色 id。
    *
    * 需求 20 之前这里是单个 `run: SavedRun | null` 槽位：换角色开新局会把上一个人的
@@ -132,6 +138,7 @@ export function defaultSave(): SaveData {
     wallet: { diamonds: 0, coins: 0 },
     checkIn: { lastDate: '', streak: 0 },
     talents: {},
+    forge: {},
     runs: {},
   };
 }
@@ -317,6 +324,7 @@ export function parseSave(raw: unknown): SaveData {
     wallet: parseWallet(obj.wallet),
     checkIn: parseCheckIn(obj.checkIn),
     talents: parseTalents(obj.talents),
+    forge: parseForge(obj.forge),
     runs: parseRuns(obj.runs, obj.run),
     progress: {
       bestFloor: Math.max(1, Math.floor(num(progressRaw.bestFloor, 1))),

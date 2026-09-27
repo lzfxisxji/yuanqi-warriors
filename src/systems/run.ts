@@ -108,6 +108,11 @@ export class RunState {
    * `recomputeMods` 在局内强化之上叠加，保证捡强化 / 进层不洗掉天赋。
    */
   talentLevels: Record<string, number>;
+  /**
+   * 锻造等级表（需求 38）。作为**独立层**保留在 run 上，
+   * 进入远征时赋值给 `player.forgeLevels`，局内该武器伤害按层级加成。
+   */
+  forgeLevels: Record<string, number>;
   stats = {
     kills: 0,
     rooms: 0,
@@ -117,14 +122,22 @@ export class RunState {
     shotsFired: 0,
   };
 
-  constructor(character: CharacterDef, seed: number, talents: Record<string, number> = {}) {
+  constructor(
+    character: CharacterDef,
+    seed: number,
+    talents: Record<string, number> = {},
+    forge: Record<string, number> = {},
+  ) {
     this.character = character;
     this.seed = seed >>> 0;
     this.rng = new RNG(this.seed);
     this.talentLevels = talents;
+    this.forgeLevels = forge;
     // 天赋作为独立层叠加到基础 mods 之上（基础 = 无强化）
     this.mods = applyTalents(defaultMods(), this.talentLevels);
     this.player = new Player(character);
+    // 需求 38：把当前存档里的锻造等级注入玩家，局内武器伤害据此加成
+    this.player.forgeLevels = { ...forge };
     this.plan = generateDungeon({ seed: this.seedForFloor(1), floor: 1 });
     this.currentRoomKey = this.plan.startKey;
     this.player.refreshFromMods(this.mods);

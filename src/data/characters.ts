@@ -305,6 +305,12 @@ export function getCharacter(id: string): CharacterDef {
   return CHARACTERS.find((c) => c.id === id) ?? CHARACTERS[0]!;
 }
 
+/**
+ * 默认即"已拥有"的武器（需求 38 背包/锻造用）：所有角色初始武器的去重集合。
+ * 这样新玩家即使还没下过本，也能锻造自己的起始武器，而不必强行先开一局。
+ */
+export const DEFAULT_OWNED_WEAPONS: string[] = Array.from(new Set(CHARACTERS.map((c) => c.startWeapon)));
+
 export function isCharacterUnlocked(
   def: CharacterDef,
   progress: { bestFloor: number; wins: number },

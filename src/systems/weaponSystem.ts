@@ -92,7 +92,7 @@ export function updateWeapon(fire: WeaponFireContext, firing: boolean): void {
         : (Math.random() - 0.5) * spread * 2;
     const angle = baseAngle + offset;
     const crit = Math.random() < critChance;
-    const damage = def.damage * damageMul;
+    const damage = def.damage * damageMul * player.forgeDamageMul(def.id);
 
     if (def.kind === 'grenade') {
       fire.projectiles.spawn({
@@ -205,7 +205,7 @@ function updateBeam(fire: WeaponFireContext, firing: boolean): void {
   player.beamCore = def.colors.core;
   player.beamGlow = def.colors.glow;
 
-  const dps = (def.beamDps ?? 40) * player.mods.damageMul;
+  const dps = (def.beamDps ?? 40) * player.mods.damageMul * player.forgeDamageMul(def.id);
   const critChance = clamp(def.crit + player.mods.critAdd, 0, 0.95);
   const halfWidth = (def.beamWidth ?? 8) * 0.72;
 
@@ -314,7 +314,7 @@ function updateMelee(fire: WeaponFireContext, firing: boolean): void {
   const range = def.range * mods.rangeMul;
   const halfArc = Math.max(0.08, (def.swingArc ?? 1.2) * 0.5);
   const baseAngle = player.aimAngle;
-  const baseDamage = def.damage * mods.damageMul;
+  const baseDamage = def.damage * mods.damageMul * player.forgeDamageMul(def.id);
 
   // —— 蓄力阶段：按住且能开火时累加，这一帧不挥砍 ——
   if (firing) {

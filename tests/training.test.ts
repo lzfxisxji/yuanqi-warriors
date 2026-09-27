@@ -600,6 +600,7 @@ describe('UI · 训练营选择页', () => {
     checkIn: { lastDate: '', streak: 0 } as CheckInState,
     talents: {},
     talentPointsAvailable: 0,
+    forge: {},
   };
 
   function recordingCtx(): { ctx: CanvasRenderingContext2D; texts: string[] } {

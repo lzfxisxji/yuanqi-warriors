@@ -5,6 +5,7 @@ import { MELEE_CHARGE_TIME, OUT_OF_COMBAT_DELAY, PLAYER_ACCEL, PLAYER_FRICTION, 
 import type { CharacterDef } from '../data/characters';
 import type { Mods } from '../data/upgrades';
 import { defaultMods } from '../data/upgrades';
+import { FORGE_BONUS_PER_LEVEL } from '../data/forge';
 import type { WeaponDef } from '../data/weapons';
 import { getWeaponDef } from '../data/weapons';
 import type { Room } from '../dungeon/room';
@@ -117,6 +118,12 @@ export class Player extends Entity {
 
   /** 拾取物磁力范围加成 */
   pickupBonus = 0;
+
+  /**
+   * 锻造等级表（需求 38）：weaponId → 已锻造层级。
+   * 由 `RunState` 进入远征时从存档注入；局内武器伤害据此换算倍率。
+   */
+  forgeLevels: Record<string, number> = {};
 
   constructor(def: CharacterDef) {
     super();
@@ -532,6 +539,12 @@ export class Player extends Entity {
       x: this.x + Math.cos(this.aimAngle) * dist,
       y: this.y + Math.sin(this.aimAngle) * dist - 2,
     };
+  }
+
+  /** 锻造伤害倍率（需求 38）：按武器 id 查锻造等级换算（0 级 = 1.0）。 */
+  forgeDamageMul(weaponId: string): number {
+    const lvl = Math.floor(this.forgeLevels[weaponId] ?? 0);
+    return 1 + Math.max(0, lvl) * FORGE_BONUS_PER_LEVEL;
   }
 
   /** 供美术使用的枪口角度（含轻微摆动）。 */
